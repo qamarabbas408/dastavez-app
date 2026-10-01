@@ -11,13 +11,16 @@
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
-import { useState } from 'react';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useCallback, useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '@/components/atoms/button';
 import { AppIcon, type IconName } from '@/components/atoms/icon';
 import { Screen } from '@/components/molecules/screen';
 import { Radius, Spacing, touchTarget } from '@/constants/theme';
+import { getDocument } from '@/data/documents';
+import { useAsyncData } from '@/data/use-async';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
 
@@ -31,17 +34,23 @@ const DESTINATIONS: { id: string; label: string; detail: string; icon: IconName 
 export default function ShareHandoffScreen() {
   const theme = useTheme();
   const { id, format } = useLocalSearchParams<{ id?: string; format?: string }>();
+  const db = useSQLiteContext();
   const { state, dispatch } = useStore();
   const [picked, setPicked] = useState<string | null>(null);
 
-  const document = state.documents.find((doc) => doc.id === id);
+  const load = useCallback(() => (id ? getDocument(db, id) : Promise.resolve(null)), [db, id]);
+  const { data: document } = useAsyncData(load);
+
   const formatLabel = format ?? 'PDF';
 
   /**
    * Built as a route object rather than a string so `typedRoutes` can check it.
    * The document id comes from a param, so it cannot be a literal href.
    */
-  const returnTo = { pathname: '/document/[id]/view' as const, params: { id: document?.id ?? id ?? '' } };
+  const returnTo = {
+    pathname: '/document/[id]/view' as const,
+    params: { id: document?.id ?? id ?? '' },
+  };
 
   const complete = (destination: string) => {
     if (state.failures.exportCancelled) {
@@ -95,7 +104,9 @@ export default function ShareHandoffScreen() {
                 <AppIcon name={destination.icon} size={20} color={theme.accent} />
               </View>
               <View style={styles.destinationText}>
-                <Text style={[styles.destinationLabel, { color: theme.text }]}>{destination.label}</Text>
+                <Text style={[styles.destinationLabel, { color: theme.text }]}>
+                  {destination.label}
+                </Text>
                 <Text style={[styles.destinationDetail, { color: theme.textSecondary }]}>
                   {destination.detail}
                 </Text>
@@ -128,7 +139,9 @@ export default function ShareHandoffScreen() {
           variant="primary"
           fullWidth
           disabled={!picked}
-          onPress={() => picked && complete(DESTINATIONS.find((d) => d.id === picked)?.label ?? 'the selected app')}
+          onPress={() =>
+            picked && complete(DESTINATIONS.find((d) => d.id === picked)?.label ?? 'the selected app')
+          }
         />
       </View>
     </Screen>
@@ -147,7 +160,13 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     padding: Spacing.three,
   },
-  iconWrap: { width: 40, height: 40, borderRadius: 10, alignItems: 'center', justifyContent: 'center' },
+  iconWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   destinationText: { flex: 1, gap: 2 },
   destinationLabel: { fontSize: 16, fontWeight: '600' },
   destinationDetail: { fontSize: 13 },

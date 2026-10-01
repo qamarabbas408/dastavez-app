@@ -2,15 +2,18 @@
  * Edit & Save: adjust the pages, name the document, choose a format, and save.
  *
  * Shared by the scan and import paths, so it reads everything from the draft in
- * the store rather than taking props. The Back target depends on where the
- * draft came from, which is why `origin` is part of the draft.
+ * the store rather than taking props.
  *
- * Two blocking states are modelled here: OCR failure offers Retry or Continue
- * without OCR, and low storage blocks saving until the reviewer acknowledges
- * it. Neither discards the draft silently.
+ * Saving is the point where a draft becomes real: the chosen images are copied
+ * into app storage and a record is written to SQLite. Both happen here rather
+ * than while picking, so abandoning a draft never leaves files or rows behind.
+ *
+ * Two blocking states are modelled: OCR failure offers Retry or Continue
+ * without OCR, and low storage blocks saving. Neither discards the draft.
  */
 
 import { router } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
 import { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -24,9 +27,15 @@ import { Segmented } from '@/components/atoms/segmented';
 import { TextField } from '@/components/atoms/text-field';
 import { PagePreview } from '@/components/molecules/page-preview';
 import { MaxContentWidth, Radius, Spacing, touchTarget } from '@/constants/theme';
+import { insertDocument } from '@/data/documents';
+import { toDataError } from '@/data/errors';
+import { newId } from '@/data/ids';
+import { deletePageFile, storePageImage } from '@/data/page-store';
 import { useTheme } from '@/hooks/use-theme';
-import { useStore, buildDocumentId } from '@/store/store';
+import { useStore } from '@/store/store';
 import type { PageFilter } from '@/store/types';
+
+const UNTITLED = 'Untitled document';
 
 const FILTERS: { value: PageFilter; label: string; icon: IconName }[] = [
   { value: 'original', label: 'Original', icon: 'image' },
@@ -37,9 +46,11 @@ const FILTERS: { value: PageFilter; label: string; icon: IconName }[] = [
 export default function EditSaveScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const db = useSQLiteContext();
   const { state, dispatch } = useStore();
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const draft = state.draft;
 
@@ -58,17 +69,73 @@ export default function EditSaveScreen() {
   }
 
   const active = draft.pages.find((page) => page.id === activePageId) ?? draft.pages[0];
-  const backTo = draft.origin === 'scan' ? '/scan/page-review' : '/import/picker';
+  const backTo = draft.origin === 'scan' ? '/scan/page-review' : '/import/source';
   const lowStorage = state.failures.lowStorage;
 
-  const save = () => {
-    // The id is predictable from the title, so the document can be opened right
-    // away. The reducer calls the same `buildDocumentId`, so the two cannot
-    // disagree and send the reviewer to a missing document.
-    const id = buildDocumentId(draft.title, state.documents);
-    dispatch({ type: 'draft/save' });
-    // Replace rather than push: Back should not walk into a completed draft.
-    router.replace(`/document/${id}/view`);
+  // Mock captures have no image file. Saving them would write a record whose
+  // pages point at nothing, so the draft is refused instead with an explanation.
+  const mockPages = draft.pages.filter((page) => !page.uri).length;
+  const hasRealPages = draft.pages.length > 0 && mockPages === 0;
+  const canSave = hasRealPages && !lowStorage && !saving;
+
+  const save = async () => {
+    if (!canSave) return;
+    setSaving(true);
+
+    // Track copies so a failure part-way through can be rolled back rather than
+    // leaving files that no record points at.
+    const copiedUris: string[] = [];
+
+    try {
+      const pages = [];
+      for (const [index, page] of draft.pages.entries()) {
+        if (!page.uri) throw new Error(`Page ${index + 1} has no image file.`);
+        const uri = await storePageImage(page.uri, page.id);
+        copiedUris.push(uri);
+        pages.push({
+          id: page.id,
+          uri,
+          order: index,
+          rotation: page.rotation,
+          filter: page.filter,
+        });
+      }
+
+      const id = newId('doc');
+      const title = draft.title.trim() || UNTITLED;
+
+      await insertDocument(db, {
+        id,
+        title,
+        date: new Date().toISOString().slice(0, 10),
+        fileType: draft.exportAsPdf ? 'pdf' : 'jpeg',
+        ocrStatus: draft.ocrStatus,
+        ocrText: draft.ocrText,
+        pages,
+      });
+
+      dispatch({ type: 'draft/clear' });
+      dispatch({ type: 'status/set', status: { tone: 'success', text: `Saved “${title}”.` } });
+      router.replace({ pathname: '/document/[id]/view', params: { id } });
+    } catch (error) {
+      for (const uri of copiedUris) deletePageFile(uri);
+
+      const failure = toDataError(error, 'write-failed');
+      if (__DEV__) console.warn('Save failed', failure);
+
+      dispatch({
+        type: 'status/set',
+        status: {
+          tone: 'danger',
+          text:
+            failure.code === 'storage-full'
+              ? 'Not enough space to save. Free some up, then try again.'
+              : 'The document could not be saved. Nothing was changed.',
+        },
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
   return (
@@ -102,7 +169,10 @@ export default function EditSaveScreen() {
 
       <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
         {draft.pages.length > 1 ? (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.pager}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pager}>
             {draft.pages.map((page, index) => {
               const isActive = page.id === active?.id;
               return (
@@ -143,7 +213,7 @@ export default function EditSaveScreen() {
 
         <TextField
           label="Document title"
-          placeholder="Untitled document"
+          placeholder={UNTITLED}
           value={draft.title}
           onChangeText={(title) => dispatch({ type: 'draft/setTitle', title })}
           helpText="Saved on this device only."
@@ -161,7 +231,9 @@ export default function EditSaveScreen() {
             </View>
             <Switch
               value={draft.exportAsPdf}
-              onValueChange={(exportAsPdf) => dispatch({ type: 'draft/setExportFormat', exportAsPdf })}
+              onValueChange={(exportAsPdf) =>
+                dispatch({ type: 'draft/setExportFormat', exportAsPdf })
+              }
               accessibilityLabel="Save as a single PDF"
               trackColor={{ true: theme.accent, false: theme.border }}
             />
@@ -187,6 +259,14 @@ export default function EditSaveScreen() {
           </View>
         </Card>
 
+        {mockPages > 0 ? (
+          <Banner
+            tone="warning"
+            title="These pages are not real images"
+            message="The mock camera draws pages instead of photographing them, so there is no file to save. Import photos from this device to create a document. Scan becomes real once the camera is wired up."
+          />
+        ) : null}
+
         {draft.ocrStatus === 'failed' ? (
           <Banner
             tone="danger"
@@ -206,11 +286,19 @@ export default function EditSaveScreen() {
         ) : null}
 
         {draft.ocrEnabled && draft.ocrStatus === 'complete' ? (
-          <Banner tone="success" title="Text recognised" message="Sample text is ready on the document." />
+          <Banner
+            tone="success"
+            title="Text recognised"
+            message="Sample text is ready on the document."
+          />
         ) : null}
 
         {!draft.ocrEnabled ? (
-          <Banner tone="info" title="Text recognition off" message="The document will be saved as images only." />
+          <Banner
+            tone="info"
+            title="Text recognition off"
+            message="The document will be saved as images only."
+          />
         ) : null}
 
         {lowStorage ? (
@@ -232,12 +320,17 @@ export default function EditSaveScreen() {
             paddingBottom: insets.bottom + Spacing.three,
           },
         ]}>
-        <Button label="Cancel" variant="secondary" onPress={() => setConfirmDiscard(true)} style={styles.footerAction} />
         <Button
-          label="Save document"
+          label="Cancel"
+          variant="secondary"
+          onPress={() => setConfirmDiscard(true)}
+          style={styles.footerAction}
+        />
+        <Button
+          label={saving ? 'Saving…' : 'Save document'}
           icon="check"
           variant="primary"
-          disabled={lowStorage}
+          disabled={!canSave}
           onPress={save}
           style={styles.footerAction}
         />
@@ -246,7 +339,7 @@ export default function EditSaveScreen() {
       <ConfirmDialog
         visible={confirmDiscard}
         title="Discard this draft?"
-        message={`${draft.pages.length} ${draft.pages.length === 1 ? 'page' : 'pages'} and the title will be lost.`}
+        message={`${draft.pages.length} ${draft.pages.length === 1 ? 'page' : 'pages'} and the title will be lost. Nothing has been saved.`}
         confirmLabel="Discard draft"
         destructive
         onConfirm={() => {
@@ -295,7 +388,12 @@ const styles = StyleSheet.create({
   pagerLabel: { fontSize: 12, fontWeight: '700' },
   previewBlock: { gap: Spacing.three, alignItems: 'center' },
   adjustRow: { flexDirection: 'row', gap: Spacing.two },
-  switchRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three, minHeight: touchTarget.min },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.three,
+    minHeight: touchTarget.min,
+  },
   switchText: { flex: 1, gap: Spacing.one },
   switchTitle: { fontSize: 16, fontWeight: '600' },
   switchBody: { fontSize: 14, lineHeight: 20 },

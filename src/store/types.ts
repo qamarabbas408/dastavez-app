@@ -1,49 +1,45 @@
 /**
- * Domain types for the Dastavez prototype.
+ * Session state types for the store.
  *
- * Everything here is fictional and in-memory. There are no real files, no real
- * OCR, and no persistence — a document is a record in the store's array and
- * nothing else.
+ * Persisted documents are described by `DocumentRecord` and `Page` in
+ * `src/data/types`. This file covers the unfinished draft and the UI states
+ * around it.
  */
 
-export type FileKind = 'pdf' | 'jpeg';
+import type { FileKind, OcrStatus, PageFilter } from '@/data/types';
 
-export type OcrStatus = 'pending' | 'complete' | 'failed' | 'unavailable';
+/**
+ * Canonical definitions live in `src/data/types`; re-exported here so screens
+ * can import the shared enums from either place.
+ */
+export type { FileKind, OcrStatus, PageFilter };
 
-/** A single captured or imported page. `imageTint` stands in for the preview. */
-export type MockPage = {
+/**
+ * A page while it is part of an unfinished draft.
+ *
+ * `uri` is present once the page has a real image — imported photos today, real
+ * captures later. It is absent for mock-captured pages, which have no file.
+ */
+export type DraftPage = {
   id: string;
-  /** Index within the owning draft or document, 0-based. */
+  /** Index within the draft, 0-based. */
   order: number;
   label: string;
+  uri?: string;
   /** Rotation in degrees: 0, 90, 180, or 270. */
   rotation: number;
-  /** Simulated filter treatment applied in Edit & Save. */
+  /** Filter treatment. Not yet applied to real images. */
   filter: PageFilter;
-};
-
-export type PageFilter = 'original' | 'greyscale' | 'highContrast';
-
-export type MockDocument = {
-  id: string;
-  title: string;
-  /** ISO date string, e.g. '2026-08-14'. */
-  date: string;
-  fileType: FileKind;
-  pages: MockPage[];
-  ocrStatus: OcrStatus;
-  /** Sample recognised text. Fictional, and intentionally short. */
-  ocrText: string;
 };
 
 /**
  * A document being built. Lives in the store only while the user is working on
- * it; discarded drafts simply stop being referenced.
+ * it; a draft that is discarded or saved simply stops being referenced.
  */
 export type Draft = {
   /** How the draft was started, which decides the Back target. */
   origin: 'scan' | 'import';
-  pages: MockPage[];
+  pages: DraftPage[];
   title: string;
   /** Multipage PDF toggle from Edit & Save. */
   exportAsPdf: boolean;
@@ -52,7 +48,7 @@ export type Draft = {
   ocrText: string;
 };
 
-/** Item offered by the mock Photos or PDFs picker. */
+/** Item offered by the simulated PDF picker, which is still fictional. */
 export type MockSourceItem = {
   id: string;
   title: string;
@@ -61,8 +57,6 @@ export type MockSourceItem = {
   pageCount: number;
   kind: FileKind;
 };
-
-export type SourceKind = 'photos' | 'pdfs';
 
 /**
  * Developer toggles that force the prototype into a specific state so a

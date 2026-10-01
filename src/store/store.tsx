@@ -1,26 +1,26 @@
 /**
- * In-memory store for the Dastavez prototype.
+ * Session store.
  *
- * One reducer holds every document, the working draft, and the developer
- * failure toggles. All transitions go through `dispatch`, which keeps the mock
- * layer readable in a single place and avoids setState-in-effect entirely.
+ * Holds the working draft and UI state only: which screens have been seen,
+ * whether the app is locked, the developer failure toggles, and the transient
+ * status line. Persisted documents live in SQLite behind `src/data`; screens
+ * read them through the repository and `useAsyncData`.
  *
- * Nothing here persists. A restart resets to the seed documents.
+ * Nothing here survives a restart, which now only means an unfinished draft.
  */
 
 import { createContext, useContext, useMemo, useReducer, type ReactNode } from 'react';
 
-import { createSeedDocuments, MOCK_SOURCES, nextPageId, resetPageIds, takeCapturePage } from './seed';
+import { newId } from '@/data/ids';
+
+import { MOCK_PDF_SOURCES, takeCapturePage } from './seed';
 import type {
   Draft,
+  DraftPage,
   FailureFlags,
-  FileKind,
-  MockDocument,
-  MockPage,
   MockSourceItem,
   OcrStatus,
   PageFilter,
-  SourceKind,
   StatusMessage,
 } from './types';
 
@@ -30,10 +30,7 @@ type StoreState = {
   /** False until Welcome is dismissed. Drives the first-launch redirect. */
   hasSeenWelcome: boolean;
   unlockState: UnlockState;
-  documents: MockDocument[];
   draft: Draft | null;
-  /** Id of the most recently saved document, so Save can open it. */
-  lastSavedId: string | null;
   failures: FailureFlags;
   status: StatusMessage;
 };
@@ -51,9 +48,7 @@ function createInitialState(): StoreState {
   return {
     hasSeenWelcome: false,
     unlockState: 'locked',
-    documents: createSeedDocuments(),
     draft: null,
-    lastSavedId: null,
     failures: { ...noFailures },
     status: null,
   };
@@ -66,6 +61,7 @@ export type StoreAction =
   | { type: 'draft/startScan'; pageCount: number }
   | { type: 'draft/startImport'; item: MockSourceItem }
   | { type: 'draft/startImportMany'; items: MockSourceItem[] }
+  | { type: 'draft/startImportImages'; pages: { id: string; uri: string }[]; title?: string }
   | { type: 'draft/addPage' }
   | { type: 'draft/retakePage'; pageId: string }
   | { type: 'draft/removePage'; pageId: string }
@@ -77,16 +73,14 @@ export type StoreAction =
   | { type: 'draft/setOcrEnabled'; enabled: boolean }
   | { type: 'draft/retryOcr' }
   | { type: 'draft/continueWithoutOcr' }
-  | { type: 'draft/save' }
+  | { type: 'draft/clear' }
   | { type: 'draft/discard' }
-  | { type: 'document/delete'; id: string }
   | { type: 'failure/toggle'; key: keyof FailureFlags }
   | { type: 'failure/reset' }
-  | { type: 'library/deleteAll' }
   | { type: 'status/set'; status: StatusMessage }
   | { type: 'status/clear' };
 
-function reindex(pages: MockPage[]): MockPage[] {
+function reindex(pages: DraftPage[]): DraftPage[] {
   return pages.map((page, order) => ({ ...page, order }));
 }
 
@@ -101,7 +95,7 @@ function applyOcrStatus(draft: Draft, status: OcrStatus, text: string): Draft {
 /**
  * Reducing here is deliberate rather than a hook or an effect: the OCR toggle's
  * effect on status has to be visible to the reducer, not scattered across
- * screens, so the reviewer's mental model stays "one place decides state".
+ * screens, so the mental model stays "one place decides state".
  */
 function withOcr(draft: Draft, enabled: boolean, ocrFailure: boolean): Draft {
   if (!enabled) {
@@ -120,23 +114,6 @@ Line two, present so the panel has something to scroll.
 Line three confirms the text block renders at body size without clipping.
 
 Sample text for prototype display only.`;
-
-/** Title used when the reviewer leaves the field blank. */
-export const UNTITLED = 'Untitled document';
-
-/**
- * Builds the id a document will be saved under.
- *
- * Exported because Edit & Save needs to know the id at the moment the Save
- * button is pressed, so it can open the document straight away. Keeping this in
- * one place stops the predicted id from drifting away from the real one — which
- * would send the reviewer to a "not found" screen right after saving.
- */
-export function buildDocumentId(title: string, existing: MockDocument[]): string {
-  const trimmed = title.trim() || UNTITLED;
-  const base = `doc-${trimmed.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')}`;
-  return existing.some((doc) => doc.id === base) ? `${base}-${existing.length + 1}` : base;
-}
 
 function reducer(state: StoreState, action: StoreAction): StoreState {
   switch (action.type) {
@@ -166,19 +143,18 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
     }
 
     case 'draft/startImport': {
-      const pages = Array.from({ length: action.item.pageCount }, (_, index) => ({
-        id: nextPageId(),
+      const pages: DraftPage[] = Array.from({ length: action.item.pageCount }, (_, index) => ({
+        id: newId('page'),
         order: index,
         label: labelFor(index),
         rotation: 0,
-        filter: 'original' as const,
+        filter: 'original',
       }));
-      const fileType: FileKind = action.item.kind;
       const draft: Draft = {
         origin: 'import',
         pages,
         title: action.item.title.replace(/\.pdf$/i, ''),
-        exportAsPdf: fileType === 'pdf',
+        exportAsPdf: action.item.kind === 'pdf',
         ocrEnabled: true,
         ocrStatus: 'complete',
         ocrText: SAMPLE_OCR_TEXT,
@@ -187,18 +163,17 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
     }
 
     /**
-     * Several items chosen in one picker pass. Handled here rather than by
+     * Several PDF items chosen in one picker pass. Handled here rather than by
      * repeated `draft/addPage` dispatches because that action draws from the
-     * capture pool, which would give imported photos the wrong page labels.
-     * A PDF alongside photos still produces a PDF, since the PDF decides format.
+     * capture pool, which would give imported pages the wrong labels.
      */
     case 'draft/startImportMany': {
       const items = action.items;
       if (items.length === 0) return state;
 
-      const pages = items.flatMap((item) =>
+      const pages: DraftPage[] = items.flatMap((item) =>
         Array.from({ length: item.pageCount }, (_, index) => ({
-          id: nextPageId(),
+          id: newId('page'),
           order: 0,
           label: labelFor(index),
           rotation: 0,
@@ -206,7 +181,6 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
         })),
       );
 
-      const containsPdf = items.some((item) => item.kind === 'pdf');
       const title =
         items.length === 1
           ? items[0].title.replace(/\.pdf$/i, '')
@@ -216,7 +190,38 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
         origin: 'import',
         pages: reindex(pages),
         title,
-        exportAsPdf: containsPdf,
+        exportAsPdf: items.some((item) => item.kind === 'pdf'),
+        ocrEnabled: true,
+        ocrStatus: 'complete',
+        ocrText: SAMPLE_OCR_TEXT,
+      };
+      return { ...state, draft, status: null };
+    }
+
+    /**
+     * Photos chosen from the system library.
+     *
+     * Ids are assigned at pick time so the eventual file names and record ids
+     * match. The files themselves are copied into app storage on save, not here:
+     * copying on pick would orphan a file whenever a draft is abandoned.
+     */
+    case 'draft/startImportImages': {
+      if (action.pages.length === 0) return state;
+
+      const pages: DraftPage[] = action.pages.map((page, index) => ({
+        id: page.id,
+        order: index,
+        label: labelFor(index),
+        uri: page.uri,
+        rotation: 0,
+        filter: 'original',
+      }));
+
+      const draft: Draft = {
+        origin: 'import',
+        pages,
+        title: action.title?.trim() ?? '',
+        exportAsPdf: pages.length > 1,
         ocrEnabled: true,
         ocrStatus: 'complete',
         ocrText: SAMPLE_OCR_TEXT,
@@ -307,59 +312,33 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
       return { ...state, draft: applyOcrStatus(state.draft, 'unavailable', '') };
     }
 
-    case 'draft/save': {
-      if (!state.draft) return state;
-      const { draft } = state;
-      if (draft.pages.length === 0) return state;
-
-      const title = draft.title.trim() || UNTITLED;
-      const id = buildDocumentId(draft.title, state.documents);
-      const today = new Date().toISOString().slice(0, 10);
-
-      const document: MockDocument = {
-        id,
-        title,
-        date: today,
-        fileType: draft.exportAsPdf ? 'pdf' : 'jpeg',
-        pages: reindex(draft.pages.map((page) => ({ ...page, id: nextPageId() }))),
-        ocrStatus: draft.ocrStatus,
-        ocrText: draft.ocrText,
-      };
-
-      return {
-        ...state,
-        documents: [document, ...state.documents],
-        draft: null,
-        lastSavedId: document.id,
-        status: { tone: 'success', text: `Saved “${title}”.` },
-      };
-    }
+    /**
+     * The draft has been written to the database, so it should stop being held
+     * here. Saving is asynchronous and lives in the data layer, so the screen
+     * performs it and then dispatches this.
+     */
+    case 'draft/clear':
+      return { ...state, draft: null };
 
     case 'draft/discard':
       return { ...state, draft: null, status: { tone: 'info', text: 'Draft discarded.' } };
-
-    case 'document/delete':
-      return {
-        ...state,
-        documents: state.documents.filter((doc) => doc.id !== action.id),
-        status: { tone: 'info', text: 'Document deleted.' },
-      };
 
     case 'failure/toggle': {
       const next = { ...state.failures, [action.key]: !state.failures[action.key] };
       // Turning on OCR failure while the draft expects success should show
       // the failure state, so re-evaluate rather than leaving a stale status.
       if (action.key === 'ocrFailure' && state.draft) {
-        return { ...state, failures: next, draft: withOcr(state.draft, state.draft.ocrEnabled, next.ocrFailure) };
+        return {
+          ...state,
+          failures: next,
+          draft: withOcr(state.draft, state.draft.ocrEnabled, next.ocrFailure),
+        };
       }
       return { ...state, failures: next };
     }
 
     case 'failure/reset':
       return { ...state, failures: { ...noFailures } };
-
-    case 'library/deleteAll':
-      return { ...state, documents: [], status: { tone: 'info', text: 'All sample documents deleted.' } };
 
     case 'status/set':
       return { ...state, status: action.status };
@@ -375,22 +354,14 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
 type StoreValue = {
   state: StoreState;
   dispatch: (action: StoreAction) => void;
-  /** Honours the empty-library toggle without duplicating the check in views. */
-  visibleDocuments: MockDocument[];
 };
 
 const StoreContext = createContext<StoreValue | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, undefined, () => {
-    resetPageIds();
-    return createInitialState();
-  });
+  const [state, dispatch] = useReducer(reducer, undefined, createInitialState);
 
-  const value = useMemo<StoreValue>(() => {
-    const visible = state.failures.emptyLibrary ? [] : state.documents;
-    return { state, dispatch, visibleDocuments: visible };
-  }, [state]);
+  const value = useMemo<StoreValue>(() => ({ state, dispatch }), [state]);
 
   return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
 }
@@ -403,14 +374,10 @@ export function useStore(): StoreValue {
   return value;
 }
 
-/** Convenience selector for the most common question a screen asks. */
-export function useDocument(id: string): MockDocument | undefined {
-  const { state } = useStore();
-  return state.documents.find((doc) => doc.id === id);
+/**
+ * Sample PDFs for the still-simulated PDF import path. Photos no longer use
+ * this: they come from the system photo library through the data layer.
+ */
+export function usePdfSamples(): MockSourceItem[] {
+  return MOCK_PDF_SOURCES;
 }
-
-/** Sample items for the mock Photos or PDFs picker. */
-export function useSourceItems(kind: SourceKind): MockSourceItem[] {
-  return MOCK_SOURCES[kind];
-}
-

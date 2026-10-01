@@ -10,6 +10,8 @@
  */
 
 import { router, useLocalSearchParams } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useCallback } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 
 import { Button } from '@/components/atoms/button';
@@ -17,23 +19,28 @@ import { Card } from '@/components/atoms/card';
 import { AppIcon } from '@/components/atoms/icon';
 import { Screen } from '@/components/molecules/screen';
 import { Spacing } from '@/constants/theme';
+import { getDocument } from '@/data/documents';
+import { useAsyncData } from '@/data/use-async';
 import { useTheme } from '@/hooks/use-theme';
-import { useStore } from '@/store/store';
 
 export default function ExportConfirmScreen() {
   const theme = useTheme();
   const { id, format } = useLocalSearchParams<{ id?: string; format?: string }>();
-  const { state } = useStore();
+  const db = useSQLiteContext();
 
-  const document = state.documents.find((doc) => doc.id === id);
+  const load = useCallback(() => (id ? getDocument(db, id) : Promise.resolve(null)), [db, id]);
+  const { data: document } = useAsyncData(load);
+
   const asPdf = format !== 'jpeg';
   const formatLabel = asPdf ? 'PDF' : 'JPEG';
 
   const goBack = () => {
     if (router.canGoBack()) {
       router.back();
+    } else if (id) {
+      router.replace({ pathname: '/document/[id]/view', params: { id } });
     } else {
-      router.replace(`/document/${id}/view`);
+      router.replace('/(tabs)');
     }
   };
 
@@ -64,8 +71,8 @@ export default function ExportConfirmScreen() {
           <Text style={[styles.noticeTitle, { color: theme.text }]}>You are leaving the app</Text>
         </View>
         <Text style={[styles.noticeBody, { color: theme.textSecondary }]}>
-          The next screen is a simulation. In a real app, the file would be handed to whichever app
-          you pick, and from that point Dastavez has no control over it — that app decides where it is
+          The next screen is a simulation. In a real app, the file would be handed to whichever app you
+          pick, and from that point Dastavez has no control over it — that app decides where it is
           stored, whether it is backed up, and who else can see it.
         </Text>
         <Text style={[styles.noticeBody, { color: theme.textSecondary }]}>
@@ -80,8 +87,12 @@ export default function ExportConfirmScreen() {
           icon="share"
           variant="primary"
           fullWidth
+          disabled={!document}
           onPress={() =>
-            router.push({ pathname: '/document/[id]/share-handoff', params: { id: document?.id ?? '', format: formatLabel } })
+            router.push({
+              pathname: '/document/[id]/share-handoff',
+              params: { id: document?.id ?? '', format: formatLabel },
+            })
           }
         />
       </View>
@@ -91,11 +102,22 @@ export default function ExportConfirmScreen() {
 
 const styles = StyleSheet.create({
   summaryHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
-  iconWrap: { width: 44, height: 44, borderRadius: 12, alignItems: 'center', justifyContent: 'center' },
+  iconWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   summaryText: { flex: 1, gap: 2 },
   summaryTitle: { fontSize: 17, fontWeight: '700' },
   summaryMeta: { fontSize: 14 },
-  noticeHeader: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two, marginBottom: Spacing.two },
+  noticeHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    marginBottom: Spacing.two,
+  },
   noticeTitle: { fontSize: 16, fontWeight: '700', flexShrink: 1 },
   noticeBody: { fontSize: 14, lineHeight: 21, marginBottom: Spacing.two },
   actions: { gap: Spacing.two, marginTop: Spacing.two },

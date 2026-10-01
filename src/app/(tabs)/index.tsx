@@ -1,33 +1,60 @@
 /**
- * Home: recent documents, search, and the two ways in (Scan, Import).
+ * Home: stored documents, search, and the two ways in (Scan, Import).
  *
  * This is a tab root, so it has no back affordance and sits above the native tab
- * bar. The tab bar already reserves its own space, so content only pads for the
- * bottom safe area, not for a tab bar height.
+ * bar. The tab bar reserves its own space, so content only pads for the bottom
+ * safe area.
+ *
+ * The list is read from SQLite. Because documents change on other screens —
+ * saving one, deleting one — it re-reads whenever Home regains focus instead of
+ * showing a stale list.
  */
 
-import { router } from 'expo-router';
-import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { router, useFocusEffect } from 'expo-router';
+import { useSQLiteContext } from 'expo-sqlite';
+import { useCallback, useState } from 'react';
+import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { Banner } from '@/components/atoms/banner';
 import { Button } from '@/components/atoms/button';
 import { Card, ListRow } from '@/components/atoms/card';
 import { AppIcon } from '@/components/atoms/icon';
 import { BottomTabInset, MaxContentWidth, Spacing, touchTarget } from '@/constants/theme';
+import { listDocuments } from '@/data/documents';
+import { useAsyncData } from '@/data/use-async';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
 
 export default function HomeScreen() {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
-  const { visibleDocuments, state } = useStore();
+  const db = useSQLiteContext();
+  const { state } = useStore();
   const [query, setQuery] = useState('');
 
+  const load = useCallback(() => listDocuments(db), [db]);
+  const { status, data, error, reload } = useAsyncData(load);
+
+  useFocusEffect(
+    useCallback(() => {
+      reload();
+    }, [reload]),
+  );
+
+  const stored = data ?? [];
+  const documents = state.failures.emptyLibrary ? [] : stored;
+
+  // Search covers recognised text as well as the title: finding a document by
+  // something written inside it is the main reason to read the text at all.
   const normalized = query.trim().toLowerCase();
-  const documents = normalized
-    ? visibleDocuments.filter((document) => document.title.toLowerCase().includes(normalized))
-    : visibleDocuments;
+  const results = normalized
+    ? documents.filter(
+        (document) =>
+          document.title.toLowerCase().includes(normalized) ||
+          document.ocrText.toLowerCase().includes(normalized),
+      )
+    : documents;
 
   return (
     <View style={[styles.root, { backgroundColor: theme.background }]}>
@@ -41,9 +68,9 @@ export default function HomeScreen() {
           Dastavez
         </Text>
         <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
-          {visibleDocuments.length === 0
+          {documents.length === 0
             ? 'Nothing stored on this device yet.'
-            : `${visibleDocuments.length} sample ${visibleDocuments.length === 1 ? 'document' : 'documents'} on this device.`}
+            : `${documents.length} ${documents.length === 1 ? 'document' : 'documents'} on this device.`}
         </Text>
 
         <View
@@ -52,7 +79,7 @@ export default function HomeScreen() {
           <AppIcon name="search" size={18} color={theme.textSecondary} />
           <TextInput
             accessibilityLabel="Search documents"
-            placeholder="Search documents"
+            placeholder="Search documents and their text"
             placeholderTextColor={theme.textSecondary}
             value={query}
             onChangeText={setQuery}
@@ -83,43 +110,57 @@ export default function HomeScreen() {
           <Text accessibilityRole="header" style={[styles.sectionTitle, { color: theme.text }]}>
             {normalized ? 'Results' : 'Recent'}
           </Text>
-          {visibleDocuments.length > 0 ? (
+          {documents.length > 0 ? (
             <Text style={[styles.sectionMeta, { color: theme.textSecondary }]}>
-              {normalized ? `${documents.length} of ${visibleDocuments.length}` : `${visibleDocuments.length} items`}
+              {normalized ? `${results.length} of ${documents.length}` : `${documents.length} items`}
             </Text>
           ) : null}
         </View>
 
-        {visibleDocuments.length === 0 ? (
+        {status === 'loading' ? (
+          <View style={styles.centered}>
+            <ActivityIndicator color={theme.accent} />
+          </View>
+        ) : status === 'error' ? (
+          <Banner
+            tone="danger"
+            title="Could not read your documents"
+            message={error.message}
+            action={{ label: 'Try again', onPress: reload }}
+          />
+        ) : documents.length === 0 ? (
           <Card>
             <View style={styles.empty}>
               <AppIcon name="document" size={28} color={theme.textSecondary} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No documents yet</Text>
               <Text style={[styles.emptyBody, { color: theme.textSecondary }]}>
-                Scan a page or import a file to see it listed here. Everything stays on this device.
+                Import photos from this device to create your first document. Everything stays on this
+                device.
               </Text>
             </View>
           </Card>
-        ) : documents.length === 0 ? (
+        ) : results.length === 0 ? (
           <Card>
             <View style={styles.empty}>
               <AppIcon name="search" size={28} color={theme.textSecondary} />
               <Text style={[styles.emptyTitle, { color: theme.text }]}>No matches</Text>
               <Text style={[styles.emptyBody, { color: theme.textSecondary }]}>
-                Nothing is titled “{query.trim()}”. Clear the search to see everything.
+                Nothing matches “{query.trim()}”. Clear the search to see everything.
               </Text>
             </View>
           </Card>
         ) : (
           <View style={styles.list}>
-            {documents.map((document) => (
+            {results.map((document) => (
               <ListRow
                 key={document.id}
                 title={document.title}
                 subtitle={`${document.pages.length} ${document.pages.length === 1 ? 'page' : 'pages'} · ${document.fileType.toUpperCase()}`}
                 icon={document.fileType === 'pdf' ? 'document' : 'image'}
                 trailing={formatDate(document.date)}
-                onPress={() => router.push(`/document/${document.id}/view`)}
+                onPress={() =>
+                  router.push({ pathname: '/document/[id]/view', params: { id: document.id } })
+                }
               />
             ))}
           </View>
@@ -127,7 +168,7 @@ export default function HomeScreen() {
 
         {state.failures.emptyLibrary ? (
           <Text style={[styles.devNote, { color: theme.textSecondary }]}>
-            Empty library is forced on from Settings. Turn it off to see the sample documents.
+            Empty library is forced on from Settings. Turn it off to see stored documents.
           </Text>
         ) : null}
       </ScrollView>
@@ -173,6 +214,7 @@ const styles = StyleSheet.create({
   sectionTitle: { fontSize: 19, fontWeight: '700' },
   sectionMeta: { fontSize: 13 },
   list: { gap: Spacing.two },
+  centered: { paddingVertical: Spacing.five, alignItems: 'center' },
   empty: { alignItems: 'center', gap: Spacing.two, paddingVertical: Spacing.three },
   emptyTitle: { fontSize: 17, fontWeight: '700' },
   emptyBody: { fontSize: 14, textAlign: 'center', lineHeight: 20 },

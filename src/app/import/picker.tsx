@@ -1,33 +1,29 @@
 /**
- * Mock picker for Photos or PDFs, chosen by the `kind` route param.
+ * Simulated PDF picker.
  *
- * The grid is a real selection surface — tap to select, Cancel to abandon, Select
- * to create a draft — but every row is invented. Nothing is read from disk.
+ * A real PDF cannot become page images without a rasteriser, which this project
+ * has not chosen yet, so this screen still offers invented files. It is reached
+ * only from the PDF row on the Import screen, which labels it as simulated.
  *
- * Multi-select is allowed for photos so the reviewer can reach a multi-page
- * import in one pass; the draft is still built by the reducer, not here.
+ * No OS file picker opens and nothing on disk is read.
  */
 
-import { router, useLocalSearchParams } from 'expo-router';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Banner } from '@/components/atoms/banner';
 import { Button } from '@/components/atoms/button';
 import { AppIcon } from '@/components/atoms/icon';
 import { Screen } from '@/components/molecules/screen';
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
-import { useSourceItems, useStore } from '@/store/store';
-import type { SourceKind } from '@/store/types';
+import { usePdfSamples, useStore } from '@/store/store';
 
-export default function ImportPickerScreen() {
+export default function ImportPdfPickerScreen() {
   const theme = useTheme();
-  const { kind } = useLocalSearchParams<{ kind?: string }>();
   const { dispatch } = useStore();
-
-  // An unknown param should not crash the screen; fall back to photos.
-  const source: SourceKind = kind === 'pdfs' ? 'pdfs' : 'photos';
-  const items = useSourceItems(source);
+  const items = usePdfSamples();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
 
   const toggle = (id: string) =>
@@ -39,16 +35,22 @@ export default function ImportPickerScreen() {
     const chosen = items.filter((item) => selectedIds.includes(item.id));
     if (chosen.length === 0) return;
     // The reducer owns draft construction so page labels and file type stay
-    // consistent with where the pages actually came from.
+    // consistent with where the pages came from.
     dispatch({ type: 'draft/startImportMany', items: chosen });
-    router.replace('/edit-save');
+    router.push('/edit-save');
   };
 
   return (
     <Screen
-      title={source === 'pdfs' ? 'Choose a PDF' : 'Choose photos'}
-      subtitle={`${items.length} sample ${source === 'pdfs' ? 'files' : 'photos'}`}
+      title="Choose a PDF"
+      subtitle={`${items.length} sample files`}
       onBack={() => router.back()}>
+      <Banner
+        tone="info"
+        title="Sample data"
+        message="No file picker opens and no PDF is read. These are invented files, kept so the flow can still be reviewed until a PDF renderer is chosen."
+      />
+
       <View style={styles.grid}>
         {items.map((item) => {
           const isSelected = selectedIds.includes(item.id);
@@ -69,12 +71,15 @@ export default function ImportPickerScreen() {
               <View
                 style={[
                   styles.badge,
-                  { backgroundColor: isSelected ? theme.accent : 'transparent', borderColor: isSelected ? theme.accent : theme.border },
+                  {
+                    backgroundColor: isSelected ? theme.accent : 'transparent',
+                    borderColor: isSelected ? theme.accent : theme.border,
+                  },
                 ]}>
                 {isSelected ? <AppIcon name="check" size={14} color={theme.accentText} /> : null}
               </View>
               <View style={[styles.thumb, { backgroundColor: theme.backgroundSelected }]}>
-                <AppIcon name={source === 'pdfs' ? 'document' : 'image'} size={26} color={theme.textSecondary} />
+                <AppIcon name="document" size={26} color={theme.textSecondary} />
               </View>
               <View style={styles.itemText}>
                 <Text numberOfLines={2} style={[styles.itemTitle, { color: theme.text }]}>
@@ -90,7 +95,12 @@ export default function ImportPickerScreen() {
       </View>
 
       <View style={styles.footer}>
-        <Button label="Cancel" variant="secondary" onPress={() => router.back()} style={styles.footerAction} />
+        <Button
+          label="Cancel"
+          variant="secondary"
+          onPress={() => router.back()}
+          style={styles.footerAction}
+        />
         <Button
           label={selectedIds.length > 1 ? `Select ${selectedIds.length}` : 'Select'}
           variant="primary"
