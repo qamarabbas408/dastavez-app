@@ -6,14 +6,20 @@
  * drawn, and it is deliberately obviously a mock: a reviewer should never
  * mistake it for scanned content.
  *
+ * Filters are baked with the same function that saving uses, so the preview
+ * shows the real result rather than an approximation. Rotation stays a display
+ * transform here; it is baked on save.
+ *
  * The prop type is structural so both a draft page and a saved page from the
  * database can be passed without conversion.
  */
 
 import { Image } from 'expo-image';
+import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
 import type { PageFilter } from '@/data/types';
+import { bakeImage } from '@/data/image-edit';
 
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
@@ -44,20 +50,51 @@ export type PagePreviewProps = {
   style?: StyleProp<ViewStyle>;
 };
 
+/**
+ * The image to display, with the chosen filter baked in.
+ *
+ * Skia work happens off the render path, so the unfiltered image stays on screen
+ * until the filtered one is ready rather than flashing empty.
+ */
+function useFilteredUri(uri: string | undefined, filter: PageFilter): string | undefined {
+  const [filtered, setFiltered] = useState<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (!uri || filter === 'original') return;
+
+    let cancelled = false;
+    bakeImage(uri, 0, filter)
+      .then((result) => {
+        if (!cancelled) setFiltered(result);
+      })
+      .catch((error: unknown) => {
+        if (__DEV__) console.warn('Filter preview failed', error);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [uri, filter]);
+
+  return filter === 'original' ? uri : (filtered ?? uri);
+}
+
 export function PagePreview({ page, width = 220, compact = false, style }: PagePreviewProps) {
   const theme = useTheme();
+  const source = useFilteredUri(page.uri, page.filter);
+
   const height = Math.round(width * PAPER_RATIO);
   const rotation = { transform: [{ rotate: `${page.rotation}deg` }] };
   const frame = { width, height, borderRadius: Radius.small, borderColor: theme.border };
 
-  if (page.uri) {
+  if (source) {
     return (
       <View
         accessible
         accessibilityLabel={`Page ${page.order + 1}`}
         style={[styles.frame, frame, { backgroundColor: theme.backgroundElement }, rotation, style]}>
         <Image
-          source={{ uri: page.uri }}
+          source={{ uri: source }}
           style={StyleSheet.absoluteFill}
           contentFit="contain"
           accessibilityLabel={`Page ${page.order + 1}`}

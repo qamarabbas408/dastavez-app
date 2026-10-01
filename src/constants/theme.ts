@@ -95,5 +95,10 @@ export const Radius = {
  */
 export const MaxContentWidth = 640;
 
-/** Android tab bars are taller than iOS; reserve room so content is never hidden. */
+/**
+ * Height of the tab bar's content area, excluding the home indicator. Add the
+ * safe-area bottom inset to position anything above the tab bar: on a notched
+ * iPhone the inset is the rest of the bar's height, so omitting it lets a
+ * floating control sit inside the bar.
+ */
 export const BottomTabInset = Platform.select({ ios: 50, android: 80 }) ?? 0;

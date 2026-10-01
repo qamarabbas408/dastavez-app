@@ -10,19 +10,30 @@ This is an Expo/React Native mobile application. Prioritize mobile-first pattern
 
 ## Dastavez — what this project is
 
-A **clickable UI prototype** for an offline document scanner, iOS and Android only. The product
-behaviour is specified in `DASTAVEZ_UI_FLOW.md`; the implementation sequence and open design decisions
-are in `PLAN.md`. Read both before changing screens.
+An offline document scanner for iOS and Android. The product behaviour is specified in
+`DASTAVEZ_UI_FLOW.md`; the implementation sequence and open design decisions are in `PLAN.md`. Read
+both before changing screens.
 
-The hard constraint: **this app must never request a device permission, read a file, open the camera,
-call OCR, write to disk, or make a network request.** Every document, page, and OCR string is invented
-data in `src/store/seed.ts`, held in memory by a Context + `useReducer` (`src/store/store.tsx`) that
-resets to the seed on restart. Screens that look like they capture or share something are deliberate
-mock-ups, and the UI says so on screen.
+Data is **real, not mocked**. Documents live in SQLite (`expo-sqlite`) behind `src/data/documents.ts`,
+and their page images are files in the app's document directory, managed by `src/data/page-store.ts`.
+The store (`src/store/store.tsx`) holds session state only: the unfinished draft, lock state, the
+developer failure toggles, and a transient status line.
 
-Failure and empty states are first-class, not afterthoughts. `FailureFlags` in `src/store/types.ts`
-plus the developer panel in `src/app/(tabs)/settings.tsx` exist so a reviewer can reach every one of
-them without breaking a real device. The panel is gated on `__DEV__`.
+The app is offline by design: **no network request, no account, no analytics, and nothing leaves the
+device.** The library starts empty — only a real import creates a record.
+
+Real today: importing photos from the system library, saving documents, listing and searching them,
+opening, deleting, and baking rotation and colour filters into the stored image.
+Still simulated: the camera (Scan), PDF import (needs a rasteriser), OCR text, and export/share.
+Screens that are still mocks say so on screen.
+
+Failure and empty states are first-class. `FailureFlags` in `src/store/types.ts` plus the developer
+panel in `src/app/(tabs)/settings.tsx` make every empty, cancelled, and failed state reachable. The
+panel is gated on `__DEV__`.
+
+Permissions: the system photo picker needs none on iOS or modern Android, and none is requested. The
+real camera, when it lands, will need camera permission — so the original "never request a permission"
+rule no longer holds.
 
 Branding assets (`assets/images/icon.png`, `splash-icon.png`, the Android adaptive icon layers) are
 still the Expo starter artwork, and `android.adaptiveIcon.backgroundColor` is still Expo's `#E6F4FE`.

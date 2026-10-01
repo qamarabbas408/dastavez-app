@@ -173,7 +173,7 @@ export default function HomeScreen() {
       */}
       <View
         pointerEvents="box-none"
-        style={[styles.fabBar, { bottom: BottomTabInset + Spacing.three }]}>
+        style={[styles.fabBar, { bottom: insets.bottom + BottomTabInset + Spacing.three }]}>
         <Pressable
           accessibilityRole="button"
           accessibilityLabel="Scan document"

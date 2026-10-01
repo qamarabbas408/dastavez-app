@@ -30,10 +30,12 @@ import { MaxContentWidth, Radius, Spacing, touchTarget } from '@/constants/theme
 import { insertDocument } from '@/data/documents';
 import { toDataError } from '@/data/errors';
 import { newId } from '@/data/ids';
+import { bakeImage } from '@/data/image-edit';
 import { deletePageFile, storePageImage } from '@/data/page-store';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
 import type { PageFilter } from '@/store/types';
+import type { NewPage } from '@/data/types';
 
 const UNTITLED = 'Untitled document';
 
@@ -87,18 +89,15 @@ export default function EditSaveScreen() {
     const copiedUris: string[] = [];
 
     try {
-      const pages = [];
+      const pages: NewPage[] = [];
       for (const [index, page] of draft.pages.entries()) {
         if (!page.uri) throw new Error(`Page ${index + 1} has no image file.`);
-        const uri = await storePageImage(page.uri, page.id);
+        // Rotation and filters are baked into the stored image, so the record
+        // carries no edit state and every reader sees the finished result.
+        const baked = await bakeImage(page.uri, page.rotation, page.filter);
+        const uri = await storePageImage(baked, page.id);
         copiedUris.push(uri);
-        pages.push({
-          id: page.id,
-          uri,
-          order: index,
-          rotation: page.rotation,
-          filter: page.filter,
-        });
+        pages.push({ id: page.id, uri, order: index, rotation: 0, filter: 'original' });
       }
 
       const id = newId('doc');
