@@ -1,3 +1,11 @@
+## Token-efficient Markdown
+
+- Read only the Markdown sections needed for the current task; search for relevant headings or terms before opening a whole file.
+- When summarizing Markdown, include only task-relevant facts and avoid repeating source text.
+- Write concise Markdown: short headings, compact bullets, and direct wording. Remove repetition and unnecessary examples.
+- Preserve meaning, required details, and readability; do not over-compress or remove information needed by a person or agent.
+- Keep existing structure and conventions unless the task requires changing them.
+
 This is an Expo/React Native mobile application. Prioritize mobile-first patterns, performance, and cross-platform compatibility.
 
 ## Dastavez — what this project is
