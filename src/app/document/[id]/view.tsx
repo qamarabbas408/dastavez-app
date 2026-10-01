@@ -17,6 +17,7 @@ import { Button } from '@/components/atoms/button';
 import { Card } from '@/components/atoms/card';
 import { ConfirmDialog } from '@/components/atoms/confirm-dialog';
 import { Segmented } from '@/components/atoms/segmented';
+import { IconTileGrid } from '@/components/molecules/icon-tile-grid';
 import { PagePreview } from '@/components/molecules/page-preview';
 import { Screen } from '@/components/molecules/screen';
 import { Spacing } from '@/constants/theme';
@@ -172,41 +173,36 @@ export default function DocumentViewScreen() {
         </Card>
       )}
 
-      <View style={styles.actions}>
-        <Button
-          label="Export PDF"
-          icon="share"
-          variant="primary"
-          fullWidth
-          onPress={() =>
-            router.push({
-              pathname: '/document/[id]/export-confirm',
-              params: { id: document.id, format: 'pdf' },
-            })
-          }
-        />
-        <Button
-          label="Export JPEG"
-          icon="image"
-          variant="secondary"
-          fullWidth
-          onPress={() =>
-            router.push({
-              pathname: '/document/[id]/export-confirm',
-              params: { id: document.id, format: 'jpeg' },
-            })
-          }
-        />
-        <Button
-          label="Delete document"
-          icon="trash"
-          variant="destructive"
-          fullWidth
-          disabled={deleting}
-          onPress={() => setConfirmDelete(true)}
-        />
-        <Button label="Back to Home" variant="quiet" fullWidth onPress={backHome} />
-      </View>
+      <IconTileGrid
+        tiles={[
+          {
+            icon: 'document',
+            label: 'Export PDF',
+            onPress: () =>
+              router.push({
+                pathname: '/document/[id]/export-confirm',
+                params: { id: document.id, format: 'pdf' },
+              }),
+          },
+          {
+            icon: 'image',
+            label: 'Export JPEG',
+            onPress: () =>
+              router.push({
+                pathname: '/document/[id]/export-confirm',
+                params: { id: document.id, format: 'jpeg' },
+              }),
+          },
+          {
+            icon: 'trash',
+            label: 'Delete',
+            destructive: true,
+            disabled: deleting,
+            onPress: () => setConfirmDelete(true),
+          },
+          { icon: 'home', label: 'Back to Home', onPress: backHome },
+        ]}
+      />
 
       <ConfirmDialog
         visible={confirmDelete}
@@ -242,5 +238,4 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.two,
   },
   ocrText: { fontSize: 15, lineHeight: 23 },
-  actions: { gap: Spacing.two, marginTop: Spacing.two },
 });

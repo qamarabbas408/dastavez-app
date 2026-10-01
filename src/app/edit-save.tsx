@@ -1,5 +1,5 @@
 /**
- * Edit & Save: adjust the pages, name the document, choose a format, and save.
+ * Edit & Save: adjust the pages, name the document, and save.
  *
  * Shared by the scan and import paths, so it reads everything from the draft in
  * the store rather than taking props.
@@ -8,25 +8,27 @@
  * into app storage and a record is written to SQLite. Both happen here rather
  * than while picking, so abandoning a draft never leaves files or rows behind.
  *
- * Two blocking states are modelled: OCR failure offers Retry or Continue
- * without OCR, and low storage blocks saving. Neither discards the draft.
+ * The screen is laid out as a scanner editor: a fixed header, the page filling
+ * whatever viewport is left, and a fixed tool bar. Two blocking states are
+ * modelled: OCR failure offers Retry or Continue without OCR, and low storage
+ * blocks saving. Neither discards the draft.
  */
 
 import { router } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Switch, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Banner } from '@/components/atoms/banner';
 import { Button } from '@/components/atoms/button';
-import { Card } from '@/components/atoms/card';
 import { ConfirmDialog } from '@/components/atoms/confirm-dialog';
 import { AppIcon, type IconName } from '@/components/atoms/icon';
 import { Segmented } from '@/components/atoms/segmented';
 import { TextField } from '@/components/atoms/text-field';
+import { IconTileGrid } from '@/components/molecules/icon-tile-grid';
 import { PagePreview } from '@/components/molecules/page-preview';
-import { MaxContentWidth, Radius, Spacing, touchTarget } from '@/constants/theme';
+import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
 import { insertDocument } from '@/data/documents';
 import { toDataError } from '@/data/errors';
 import { newId } from '@/data/ids';
@@ -53,6 +55,10 @@ export default function EditSaveScreen() {
   const [activePageId, setActivePageId] = useState<string | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [saving, setSaving] = useState(false);
+  /** Which editing tool is open, if any. Its options show above the toolbar. */
+  const [tool, setTool] = useState<'filter' | null>(null);
+  const [renaming, setRenaming] = useState(false);
+  const [nextTitle, setNextTitle] = useState('');
 
   const draft = state.draft;
 
@@ -73,12 +79,23 @@ export default function EditSaveScreen() {
   const active = draft.pages.find((page) => page.id === activePageId) ?? draft.pages[0];
   const backTo = draft.origin === 'scan' ? '/scan/page-review' : '/import/source';
   const lowStorage = state.failures.lowStorage;
+  const title = draft.title.trim() || UNTITLED;
 
   // Mock captures have no image file. Saving them would write a record whose
   // pages point at nothing, so the draft is refused instead with an explanation.
   const mockPages = draft.pages.filter((page) => !page.uri).length;
   const hasRealPages = draft.pages.length > 0 && mockPages === 0;
   const canSave = hasRealPages && !lowStorage && !saving;
+
+  const openRename = () => {
+    setNextTitle(draft.title);
+    setRenaming(true);
+  };
+
+  const commitRename = () => {
+    dispatch({ type: 'draft/setTitle', title: nextTitle });
+    setRenaming(false);
+  };
 
   const save = async () => {
     if (!canSave) return;
@@ -101,11 +118,11 @@ export default function EditSaveScreen() {
       }
 
       const id = newId('doc');
-      const title = draft.title.trim() || UNTITLED;
+      const savedTitle = draft.title.trim() || UNTITLED;
 
       await insertDocument(db, {
         id,
-        title,
+        title: savedTitle,
         date: new Date().toISOString().slice(0, 10),
         fileType: draft.exportAsPdf ? 'pdf' : 'jpeg',
         ocrStatus: draft.ocrStatus,
@@ -114,7 +131,7 @@ export default function EditSaveScreen() {
       });
 
       dispatch({ type: 'draft/clear' });
-      dispatch({ type: 'status/set', status: { tone: 'success', text: `Saved “${title}”.` } });
+      dispatch({ type: 'status/set', status: { tone: 'success', text: `Saved “${savedTitle}”.` } });
       router.replace({ pathname: '/document/[id]/view', params: { id } });
     } catch (error) {
       for (const uri of copiedUris) deletePageFile(uri);
@@ -155,22 +172,46 @@ export default function EditSaveScreen() {
           style={styles.headerButton}>
           <AppIcon name="chevron-left" size={22} color={theme.accent} accessibilityLabel="Go back" />
         </Pressable>
+
         <View style={styles.headerText}>
-          <Text accessibilityRole="header" style={[styles.title, { color: theme.text }]}>
-            Edit &amp; save
-          </Text>
+          <View style={styles.titleRow}>
+            <Text
+              accessibilityRole="header"
+              numberOfLines={1}
+              style={[styles.title, { color: theme.text }]}>
+              {title}
+            </Text>
+            <Pressable
+              accessibilityRole="button"
+              accessibilityLabel={`Rename, currently ${title}`}
+              onPress={openRename}
+              hitSlop={8}
+              style={styles.headerButton}>
+              <AppIcon name="pencil" size={16} color={theme.textSecondary} />
+            </Pressable>
+          </View>
           <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
             {draft.pages.length} {draft.pages.length === 1 ? 'page' : 'pages'} ·{' '}
             {draft.origin === 'scan' ? 'from scan' : 'from import'}
           </Text>
         </View>
+
+        <Button
+          label={saving ? 'Saving…' : 'Save'}
+          icon="check"
+          variant="primary"
+          size="compact"
+          disabled={!canSave}
+          onPress={save}
+        />
       </View>
 
-      <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+      <View style={styles.body}>
         {draft.pages.length > 1 ? (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
+            style={styles.pagerScroll}
             contentContainerStyle={styles.pager}>
             {draft.pages.map((page, index) => {
               const isActive = page.id === active?.id;
@@ -190,149 +231,94 @@ export default function EditSaveScreen() {
           </ScrollView>
         ) : null}
 
-        {active ? (
-          <View style={styles.previewBlock}>
-            <PagePreview page={active} width={200} style={{ alignSelf: 'center' }} />
-            <View style={styles.adjustRow}>
-              <Button
-                label="Rotate"
-                icon="rotate"
-                size="compact"
-                onPress={() => dispatch({ type: 'draft/rotatePage', pageId: active.id })}
+        <View
+          style={[
+            styles.viewport,
+            { paddingHorizontal: Spacing.three, paddingTop: Spacing.two, paddingBottom: Spacing.two },
+          ]}>
+          {/* Notices sit over the image so the page keeps the whole viewport. */}
+          <View style={styles.overlay} pointerEvents="box-none">
+            {mockPages > 0 ? (
+              <Banner
+                tone="warning"
+                title="These pages are not real images"
+                message="The mock camera draws pages instead of photographing them, so there is no file to save. Import photos from this device to create a document. Scan becomes real once the camera is wired up."
               />
-            </View>
+            ) : null}
+
+            {draft.ocrStatus === 'failed' ? (
+              <>
+                <Banner
+                  tone="danger"
+                  title="Text recognition failed"
+                  message="Nothing was recognised for this document. Retry, or save the pages without text."
+                  action={{ label: 'Retry', onPress: () => dispatch({ type: 'draft/retryOcr' }) }}
+                />
+                <Button
+                  label="Continue without text"
+                  variant="secondary"
+                  fullWidth
+                  onPress={() => dispatch({ type: 'draft/continueWithoutOcr' })}
+                />
+              </>
+            ) : null}
+
+            {lowStorage ? (
+              <Banner
+                tone="warning"
+                title="Not enough space to save"
+                message="This device is low on storage. Free some up, then try saving again. Your pages are still here."
+              />
+            ) : null}
+          </View>
+
+          {active ? <PagePreview page={active} fill /> : null}
+        </View>
+      </View>
+
+      <View
+        style={[
+          styles.dock,
+          {
+            borderTopColor: theme.border,
+            backgroundColor: theme.background,
+            // Clear the home indicator so the toolbar is never over it.
+            paddingBottom: insets.bottom + Spacing.three,
+          },
+        ]}>
+        <View style={styles.dockInner}>
+          {/* The open tool's options sit directly above the toolbar. */}
+          {tool === 'filter' && active ? (
             <Segmented
               accessibilityLabel="Page filter"
               options={FILTERS}
               value={active.filter}
-              onChange={(filter) => dispatch({ type: 'draft/setFilter', pageId: active.id, filter })}
-            />
-          </View>
-        ) : null}
-
-        <TextField
-          label="Document title"
-          placeholder={UNTITLED}
-          value={draft.title}
-          onChangeText={(title) => dispatch({ type: 'draft/setTitle', title })}
-          helpText="Saved on this device only."
-        />
-
-        <Card>
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={[styles.switchTitle, { color: theme.text }]}>Save as a single PDF</Text>
-              <Text style={[styles.switchBody, { color: theme.textSecondary }]}>
-                {draft.pages.length === 1
-                  ? 'A single page is also valid as a PDF.'
-                  : `Combines all ${draft.pages.length} pages into one file.`}
-              </Text>
-            </View>
-            <Switch
-              value={draft.exportAsPdf}
-              onValueChange={(exportAsPdf) =>
-                dispatch({ type: 'draft/setExportFormat', exportAsPdf })
+              onChange={(filter) =>
+                dispatch({ type: 'draft/setFilter', pageId: active.id, filter })
               }
-              accessibilityLabel="Save as a single PDF"
-              trackColor={{ true: theme.accent, false: theme.border }}
             />
-          </View>
-        </Card>
+          ) : null}
 
-        <Card>
-          <View style={styles.switchRow}>
-            <View style={styles.switchText}>
-              <Text style={[styles.switchTitle, { color: theme.text }]}>English text recognition</Text>
-              <Text style={[styles.switchBody, { color: theme.textSecondary }]}>
-                {draft.ocrEnabled
-                  ? 'Makes the text in each page selectable later.'
-                  : 'Off. No text will be recognised for this document.'}
-              </Text>
-            </View>
-            <Switch
-              value={draft.ocrEnabled}
-              onValueChange={(enabled) => dispatch({ type: 'draft/setOcrEnabled', enabled })}
-              accessibilityLabel="English text recognition"
-              trackColor={{ true: theme.accent, false: theme.border }}
-            />
-          </View>
-        </Card>
-
-        {mockPages > 0 ? (
-          <Banner
-            tone="warning"
-            title="These pages are not real images"
-            message="The mock camera draws pages instead of photographing them, so there is no file to save. Import photos from this device to create a document. Scan becomes real once the camera is wired up."
+          <IconTileGrid
+            tiles={[
+              {
+                icon: 'rotate',
+                label: 'Rotate',
+                disabled: !active,
+                onPress: () => active && dispatch({ type: 'draft/rotatePage', pageId: active.id }),
+              },
+              {
+                icon: 'filter',
+                label: 'Filter',
+                selected: tool === 'filter',
+                disabled: !active,
+                onPress: () => setTool((current) => (current === 'filter' ? null : 'filter')),
+              },
+              { icon: 'crop', label: 'Crop' },
+              { icon: 'text', label: 'Text' },
+            ]}
           />
-        ) : null}
-
-        {draft.ocrStatus === 'failed' ? (
-          <Banner
-            tone="danger"
-            title="Text recognition failed"
-            message="Nothing was recognised for this document. Retry, or save the pages without text."
-            action={{ label: 'Retry', onPress: () => dispatch({ type: 'draft/retryOcr' }) }}
-          />
-        ) : null}
-
-        {draft.ocrStatus === 'failed' ? (
-          <Button
-            label="Continue without text"
-            variant="secondary"
-            fullWidth
-            onPress={() => dispatch({ type: 'draft/continueWithoutOcr' })}
-          />
-        ) : null}
-
-        {draft.ocrEnabled && draft.ocrStatus === 'complete' ? (
-          <Banner
-            tone="success"
-            title="Text recognised"
-            message="Sample text is ready on the document."
-          />
-        ) : null}
-
-        {!draft.ocrEnabled ? (
-          <Banner
-            tone="info"
-            title="Text recognition off"
-            message="The document will be saved as images only."
-          />
-        ) : null}
-
-        {lowStorage ? (
-          <Banner
-            tone="warning"
-            title="Not enough space to save"
-            message="This device is low on storage. Free some up, then try saving again. Your pages are still here."
-          />
-        ) : null}
-      </ScrollView>
-
-      <View
-        style={[
-          styles.footer,
-          {
-            borderTopColor: theme.border,
-            backgroundColor: theme.background,
-            // Clear the home indicator so Save is never sitting on top of it.
-            paddingBottom: insets.bottom + Spacing.three,
-          },
-        ]}>
-        <Button
-          label="Cancel"
-          variant="secondary"
-          onPress={() => setConfirmDiscard(true)}
-          style={styles.footerAction}
-        />
-        <Button
-          label={saving ? 'Saving…' : 'Save document'}
-          icon="check"
-          variant="primary"
-          disabled={!canSave}
-          onPress={save}
-          style={styles.footerAction}
-        />
+        </View>
       </View>
 
       <ConfirmDialog
@@ -348,6 +334,45 @@ export default function EditSaveScreen() {
         }}
         onCancel={() => setConfirmDiscard(false)}
       />
+
+      <Modal
+        visible={renaming}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setRenaming(false)}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Dismiss"
+          onPress={() => setRenaming(false)}
+          style={styles.backdrop}>
+          <Pressable
+            // Stop taps inside the sheet from dismissing it.
+            onPress={() => {}}
+            style={[styles.sheet, { backgroundColor: theme.background, borderColor: theme.border }]}>
+            <Text style={[styles.sheetTitle, { color: theme.text }]}>Rename document</Text>
+            <TextField
+              label="Document title"
+              placeholder={UNTITLED}
+              value={nextTitle}
+              onChangeText={setNextTitle}
+              helpText="Saved on this device only."
+              autoFocus
+              maxLength={120}
+              returnKeyType="done"
+              onSubmitEditing={commitRename}
+            />
+            <View style={styles.sheetActions}>
+              <Button
+                label="Cancel"
+                variant="secondary"
+                onPress={() => setRenaming(false)}
+                style={styles.sheetAction}
+              />
+              <Button label="Rename" variant="primary" onPress={commitRename} style={styles.sheetAction} />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -364,17 +389,12 @@ const styles = StyleSheet.create({
   },
   headerButton: { minWidth: 32, minHeight: 32, alignItems: 'center', justifyContent: 'center' },
   headerText: { flex: 1, gap: 2 },
-  title: { fontSize: 20, fontWeight: '700' },
+  titleRow: { flexDirection: 'row', alignItems: 'center', gap: Spacing.one },
+  title: { fontSize: 20, fontWeight: '700', flexShrink: 1 },
   subtitle: { fontSize: 14 },
-  content: {
-    paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.three,
-    paddingBottom: Spacing.four,
-    gap: Spacing.three,
-    width: '100%',
-    maxWidth: MaxContentWidth,
-    alignSelf: 'center',
-  },
+
+  body: { flex: 1 },
+  pagerScroll: { flexGrow: 0, paddingHorizontal: Spacing.three },
   pager: { gap: Spacing.two, paddingVertical: Spacing.one, paddingRight: Spacing.two },
   pagerItem: {
     borderRadius: Radius.medium,
@@ -385,25 +405,48 @@ const styles = StyleSheet.create({
     minWidth: 80,
   },
   pagerLabel: { fontSize: 12, fontWeight: '700' },
-  previewBlock: { gap: Spacing.three, alignItems: 'center' },
-  adjustRow: { flexDirection: 'row', gap: Spacing.two },
-  switchRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: Spacing.three,
-    minHeight: touchTarget.min,
-  },
-  switchText: { flex: 1, gap: Spacing.one },
-  switchTitle: { fontSize: 16, fontWeight: '600' },
-  switchBody: { fontSize: 14, lineHeight: 20 },
-  footer: {
-    flexDirection: 'row',
+
+  viewport: { flex: 1, alignItems: 'stretch' },
+  overlay: {
+    position: 'absolute',
+    top: Spacing.two,
+    left: Spacing.three,
+    right: Spacing.three,
+    zIndex: 1,
     gap: Spacing.two,
-    paddingHorizontal: Spacing.three,
-    paddingTop: Spacing.three,
-    borderTopWidth: StyleSheet.hairlineWidth,
   },
-  footerAction: { flex: 1 },
+
+  dock: {
+    borderTopWidth: StyleSheet.hairlineWidth,
+    paddingHorizontal: Spacing.three,
+    paddingTop: Spacing.two,
+  },
+  dockInner: {
+    gap: Spacing.two,
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    alignSelf: 'center',
+  },
+
+  backdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: Spacing.four,
+  },
+  sheet: {
+    width: '100%',
+    maxWidth: MaxContentWidth,
+    borderRadius: Radius.large,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: Spacing.four,
+    gap: Spacing.three,
+  },
+  sheetTitle: { fontSize: 18, fontWeight: '700' },
+  sheetActions: { flexDirection: 'row', gap: Spacing.two },
+  sheetAction: { flex: 1 },
+
   missing: {
     flex: 1,
     justifyContent: 'center',

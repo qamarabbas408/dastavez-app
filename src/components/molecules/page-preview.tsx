@@ -47,8 +47,28 @@ export type PagePreviewProps = {
   width?: number;
   /** Smaller variant used in page-review thumbnails. */
   compact?: boolean;
+  /**
+   * Sizes the preview to the space it is given instead of to `width`. The
+   * frame keeps the paper proportion and is sized so it still fits once the
+   * page is rotated.
+   */
+  fill?: boolean;
   style?: StyleProp<ViewStyle>;
 };
+
+type Box = { width: number; height: number };
+
+/**
+ * Largest paper width that fits `box`. Rotation is a transform, so it does not
+ * change the layout size — but the drawn result swaps axes, so a page turned
+ * on its side has to be fitted against the swapped bounds or it overflows.
+ */
+function fitWidth(box: Box, rotation: number): number {
+  const portrait = rotation % 180 === 0;
+  const maxW = portrait ? box.width : box.height;
+  const maxH = portrait ? box.height : box.width;
+  return Math.max(0, Math.floor(Math.min(maxW, maxH / PAPER_RATIO)));
+}
 
 /**
  * The image to display, with the chosen filter baked in.
@@ -79,31 +99,35 @@ function useFilteredUri(uri: string | undefined, filter: PageFilter): string | u
   return filter === 'original' ? uri : (filtered ?? uri);
 }
 
-export function PagePreview({ page, width = 220, compact = false, style }: PagePreviewProps) {
+export function PagePreview({
+  page,
+  width = 220,
+  compact = false,
+  fill = false,
+  style,
+}: PagePreviewProps) {
   const theme = useTheme();
   const source = useFilteredUri(page.uri, page.filter);
+  const [box, setBox] = useState<Box | null>(null);
 
-  const height = Math.round(width * PAPER_RATIO);
+  const w = fill ? (box ? fitWidth(box, page.rotation) : 0) : width;
+  const height = Math.round(w * PAPER_RATIO);
   const rotation = { transform: [{ rotate: `${page.rotation}deg` }] };
-  const frame = { width, height, borderRadius: Radius.small, borderColor: theme.border };
+  const frame = { width: w, height, borderRadius: Radius.small, borderColor: theme.border };
 
-  if (source) {
-    return (
-      <View
-        accessible
+  const content = source ? (
+    <View
+      accessible
+      accessibilityLabel={`Page ${page.order + 1}`}
+      style={[styles.frame, frame, { backgroundColor: theme.backgroundElement }, rotation, style]}>
+      <Image
+        source={{ uri: source }}
+        style={StyleSheet.absoluteFill}
+        contentFit="contain"
         accessibilityLabel={`Page ${page.order + 1}`}
-        style={[styles.frame, frame, { backgroundColor: theme.backgroundElement }, rotation, style]}>
-        <Image
-          source={{ uri: source }}
-          style={StyleSheet.absoluteFill}
-          contentFit="contain"
-          accessibilityLabel={`Page ${page.order + 1}`}
-        />
-      </View>
-    );
-  }
-
-  return (
+      />
+    </View>
+  ) : (
     <View
       accessible
       accessibilityLabel={`Mock page ${page.order + 1}, ${FILTER_LABEL[page.filter]}`}
@@ -136,6 +160,26 @@ export function PagePreview({ page, width = 220, compact = false, style }: PageP
       ) : null}
     </View>
   );
+
+  if (!fill) return content;
+
+  return (
+    <View
+      style={styles.fill}
+      onLayout={(event) => {
+        const next = {
+          width: event.nativeEvent.layout.width,
+          height: event.nativeEvent.layout.height,
+        };
+        // Same box would only trigger a re-render, not a new layout, but
+        // bailing out keeps the first paint stable.
+        setBox((current) =>
+          current && current.width === next.width && current.height === next.height ? current : next,
+        );
+      }}>
+      {box ? content : null}
+    </View>
+  );
 }
 
 function filterBackground(filter: PageFilter, base: string, text: string): string {
@@ -150,6 +194,7 @@ function glyphColor(filter: PageFilter, textSecondary: string): string {
 }
 
 const styles = StyleSheet.create({
+  fill: { flex: 1, width: '100%', alignItems: 'center', justifyContent: 'center' },
   frame: {
     borderWidth: StyleSheet.hairlineWidth,
     overflow: 'hidden',

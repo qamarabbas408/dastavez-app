@@ -32,8 +32,10 @@ const ICONS = {
   'chevron-left': { ios: 'chevron.left', android: 'arrow_back' },
   'chevron-right': { ios: 'chevron.right', android: 'arrow_forward' },
   plus: { ios: 'plus', android: 'add' },
+  pencil: { ios: 'pencil', android: 'edit' },
   rotate: { ios: 'rotate.right', android: 'rotate_right' },
   crop: { ios: 'crop', android: 'crop' },
+  filter: { ios: 'camera.filters', android: 'photo_filter' },
   text: { ios: 'text.viewfinder', android: 'text_fields' },
   check: { ios: 'checkmark', android: 'check' },
   warning: { ios: 'exclamationmark.triangle.fill', android: 'warning' },
@@ -46,6 +48,7 @@ const ICONS = {
   image: { ios: 'photo', android: 'image' },
   card: { ios: 'creditcard.fill', android: 'credit_card' },
   grid: { ios: 'square.grid.2x2.fill', android: 'apps' },
+  home: { ios: 'house.fill', android: 'home' },
 } as const satisfies Record<string, { ios: SFSymbol; android: AndroidSymbol }>;
 
 export type IconName = keyof typeof ICONS;
