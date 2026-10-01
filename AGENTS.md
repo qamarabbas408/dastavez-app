@@ -143,6 +143,46 @@ Run lint and typecheck before declaring any task done.
 - Icons: `expo-symbols` (SF Symbols, iOS) is already installed. On SDK 57 it also renders **Material Symbols on Android** from the same declaration via `name={{ ios, android }}`, so `src/components/atoms/icon.tsx` needs no icon-font dependency and works in Expo Go. Native tab icons use the same pairing but with `sf` / `md` props on `NativeTabs.Trigger.Icon`. Adding an icon means adding one entry to the `ICONS` map; both names are compiler-checked against the symbol catalogues.
 - Do **not** add `@expo/vector-icons` — it was tried and removed.
 
+## Keeping the UI code clean
+
+These are habits, not rules to re-litigate per screen. They exist because a prototype grows by
+copy-paste, and duplication is what quietly rots first.
+
+**Decide what is shared before you write it.** The default in React Native is to keep a component's
+`StyleSheet` in the same file as the component. That is the right call and you should not extract
+aggressively to look tidy — a `StyleSheet` with two rules used once has no meaning outside its file,
+and splitting it adds indirection and a naming problem for zero reuse.
+
+**Extract on reuse, not on suspicion.** Promote something to `src/components/atoms/` (single
+concern, no app knowledge) or `src/components/molecules/` (composes atoms) once it genuinely repeats,
+or once it is a concept the product names. Not before. Over-abstraction is its own failure mode and
+costs more than duplication.
+
+**Never copy-paste a style block.** If you catch yourself pasting a container's padding, border, or
+flex arrangement into a second file, that layout is now two places to keep in sync. Extract it — as
+a component if it has children, as a shared style or hook if it does not. Two common offenders worth
+remembering: the centred page container (horizontal padding plus `MaxContentWidth`) and safe-area
+padding. The second is a correctness risk, not just tidiness — a copied safe-area inset is exactly
+how a header ends up underneath the status bar.
+
+**Tokens go in `src/constants/theme.ts`, styles stay local.** Colours, spacing, radii, and touch
+targets are shared vocabulary and belong in the token file. How one component arranges those tokens
+is local and belongs beside it. If a colour or spacing value is being written literally in a
+component, promote it to a token instead of repeating the literal.
+
+**Let a screen file stay readable.** If one screen needs a second `ScrollView`, a `Modal`, and a
+footer, that is a sign the shared chrome around it does not fit its shape — extend the shared
+component (a `footer` slot, for instance) rather than hand-rolling a parallel implementation next to
+it. Two versions of the same chrome is duplication with extra steps.
+
+**Make accessibility part of the component, not each call site.** Role, label, minimum touch target,
+and state come from the shared component so they cannot be forgotten. When you add a control, decide
+its accessibility contract once.
+
+**Read the surrounding code before adding to it.** Match the file's existing conventions. If you
+find yourself writing something that fights the established pattern, the fix is usually to change the
+pattern once, not to add a second dialect alongside it.
+
 ## Building with EAS
 
 Use EAS to build, sign, and submit the app in the cloud (`eas build`, `eas submit`) and to ship over-the-air updates (`eas update`) — no local Xcode or Android Studio required. Run EAS CLI as `bunx eas-cli <command>` in Bun projects, or `npx eas-cli@latest <command>` otherwise; substitute that for bare `eas` in docs examples.
