@@ -78,14 +78,30 @@ export default function CapturePreviewScreen() {
       </View>
 
       <View style={styles.controls}>
-        <Pressable
-          accessibilityRole="button"
-          accessibilityLabel="Capture page"
-          onPress={shutter}
-          style={({ pressed }) => [styles.shutter, pressed && { opacity: 0.7 }]}>
-          <View style={styles.shutterInner} />
-        </Pressable>
-        <Text style={styles.controlsHint}>Shutter adds a page and opens Page Review</Text>
+        <View style={styles.controlsRow}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Import files"
+            onPress={() => router.push('/import/source')}
+            style={({ pressed }) => [styles.importButton, pressed && { opacity: 0.6 }]}>
+            <AppIcon name="folder" size={22} color="#FFFFFF" />
+          </Pressable>
+
+          <Pressable
+            accessibilityRole="button"
+            accessibilityLabel="Capture page"
+            onPress={shutter}
+            style={({ pressed }) => [styles.shutter, pressed && { opacity: 0.7 }]}>
+            <View style={styles.shutterInner} />
+          </Pressable>
+
+          {/*
+            Matches the import button's width so the shutter stays optically
+            centred. The camera has no second action to put here.
+          */}
+          <View style={styles.controlsSpacer} />
+        </View>
+        <Text style={styles.controlsHint}>Shutter adds a page · Import adds photos</Text>
       </View>
     </View>
   );
@@ -163,6 +179,23 @@ const styles = StyleSheet.create({
   viewportLabel: { color: '#FFFFFF', fontSize: 15, fontWeight: '700', letterSpacing: 0.4 },
   viewportNote: { color: '#A7B0BD', fontSize: 13, textAlign: 'center', lineHeight: 19, maxWidth: 320 },
   controls: { alignItems: 'center', paddingTop: Spacing.four, paddingBottom: Spacing.six, gap: Spacing.three },
+  controlsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    paddingHorizontal: Spacing.five,
+  },
+  importButton: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    borderWidth: 2,
+    borderColor: 'rgba(255,255,255,0.55)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  controlsSpacer: { width: 52, height: 52 },
   shutter: {
     width: 74,
     height: 74,

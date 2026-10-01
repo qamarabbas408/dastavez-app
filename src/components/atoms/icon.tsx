@@ -44,6 +44,8 @@ const ICONS = {
   flip: { ios: 'arrow.triangle.2.circlepath', android: 'sync' },
   scan: { ios: 'viewfinder', android: 'crop_free' },
   image: { ios: 'photo', android: 'image' },
+  card: { ios: 'creditcard.fill', android: 'credit_card' },
+  grid: { ios: 'square.grid.2x2.fill', android: 'apps' },
 } as const satisfies Record<string, { ios: SFSymbol; android: AndroidSymbol }>;
 
 export type IconName = keyof typeof ICONS;

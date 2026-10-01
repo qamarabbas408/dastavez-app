@@ -13,18 +13,25 @@
 import { router, useFocusEffect } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useCallback, useState } from 'react';
-import { ActivityIndicator, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { Banner } from '@/components/atoms/banner';
-import { Button } from '@/components/atoms/button';
 import { Card, ListRow } from '@/components/atoms/card';
 import { AppIcon } from '@/components/atoms/icon';
+import { ToolGrid } from '@/components/molecules/tool-grid';
 import { BottomTabInset, MaxContentWidth, Spacing, touchTarget } from '@/constants/theme';
+import { HOME_TOOLS } from '@/constants/tools';
 import { listDocuments } from '@/data/documents';
 import { useAsyncData } from '@/data/use-async';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
+
+/**
+ * Diameter of the floating scan button. Also drives the list's bottom padding,
+ * so the last row is never hidden underneath it.
+ */
+const FAB_SIZE = 72;
 
 export default function HomeScreen() {
   const theme = useTheme();
@@ -61,7 +68,7 @@ export default function HomeScreen() {
       <ScrollView
         contentContainerStyle={[
           styles.content,
-          { paddingTop: insets.top + Spacing.three, paddingBottom: BottomTabInset + Spacing.four },
+          { paddingTop: insets.top + Spacing.three, paddingBottom: BottomTabInset + FAB_SIZE + Spacing.five },
         ]}
         keyboardShouldPersistTaps="handled">
         <Text accessibilityRole="header" style={[styles.title, { color: theme.text }]}>
@@ -89,22 +96,7 @@ export default function HomeScreen() {
           />
         </View>
 
-        <View style={styles.actions}>
-          <Button
-            label="Scan document"
-            icon="camera"
-            variant="primary"
-            fullWidth
-            onPress={() => router.push('/scan/capture-preview')}
-          />
-          <Button
-            label="Import file"
-            icon="folder"
-            variant="secondary"
-            fullWidth
-            onPress={() => router.push('/import/source')}
-          />
-        </View>
+        <ToolGrid tools={HOME_TOOLS} />
 
         <View style={styles.sectionHeader}>
           <Text accessibilityRole="header" style={[styles.sectionTitle, { color: theme.text }]}>
@@ -172,6 +164,33 @@ export default function HomeScreen() {
           </Text>
         ) : null}
       </ScrollView>
+
+      {/*
+        The one primary action floats above the list rather than sitting inline,
+        so the documents get the screen and the call to action is always
+        reachable without scrolling. Import lives on the capture screen next to
+        the shutter, because that is where someone decides to scan or import.
+      */}
+      <View
+        pointerEvents="box-none"
+        style={[styles.fabBar, { bottom: BottomTabInset + Spacing.three }]}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Scan document"
+          onPress={() => router.push('/scan/capture-preview')}
+          style={({ pressed }) => [
+            styles.fab,
+            {
+              borderColor: theme.accent,
+              backgroundColor: theme.background,
+              opacity: pressed ? 0.8 : 1,
+            },
+          ]}>
+          <View style={[styles.fabInner, { backgroundColor: theme.accent }]}>
+            <AppIcon name="camera" size={26} color={theme.accentText} />
+          </View>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -204,7 +223,31 @@ const styles = StyleSheet.create({
     paddingHorizontal: Spacing.three,
   },
   searchInput: { flex: 1, fontSize: 16, paddingVertical: Spacing.two },
-  actions: { gap: Spacing.two },
+  fabBar: {
+    position: 'absolute',
+    right: Spacing.three,
+  },
+  fab: {
+    width: FAB_SIZE,
+    height: FAB_SIZE,
+    borderRadius: FAB_SIZE / 2,
+    borderWidth: 3,
+    alignItems: 'center',
+    justifyContent: 'center',
+    // Lifts the button off the list content behind it.
+    shadowColor: '#000000',
+    shadowOpacity: 0.22,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 6,
+  },
+  fabInner: {
+    width: FAB_SIZE - 16,
+    height: FAB_SIZE - 16,
+    borderRadius: (FAB_SIZE - 16) / 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   sectionHeader: {
     flexDirection: 'row',
     alignItems: 'baseline',
