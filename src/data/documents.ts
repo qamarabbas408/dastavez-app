@@ -178,6 +178,52 @@ export async function insertDocument(
 }
 
 /**
+ * Rewrites an existing document's header and replaces its pages, atomically.
+ *
+ * Used when a saved document is reworked in Edit & Save. `date` is deliberately
+ * not part of the input: an edit does not change when the document was made, so
+ * the column keeps the value it was created with.
+ *
+ * There is no `SELECT` first. An id that no longer exists simply matches no
+ * row in the update, and the insert that follows is rejected by the foreign
+ * key, so the whole transaction rolls back rather than writing orphan pages.
+ */
+export async function updateDocument(
+  db: SQLiteDatabase,
+  input: Omit<NewDocument, 'date'>,
+): Promise<void> {
+  await db.withExclusiveTransactionAsync(async (txn) => {
+    await txn.runAsync(
+      `UPDATE documents SET title = ?, file_type = ?, ocr_status = ?, ocr_text = ? WHERE id = ?`,
+      [
+        input.title,
+        input.fileType,
+        input.ocrStatus ?? 'pending',
+        input.ocrText ?? '',
+        input.id,
+      ],
+    );
+
+    // Pages are replaced rather than patched: editing re-bakes images, so a
+    // page can come back with a new file, and rows are cheaper to rewrite than
+    // to diff one field at a time.
+    await txn.runAsync('DELETE FROM pages WHERE document_id = ?', [input.id]);
+
+    for (const [index, page] of input.pages.entries()) {
+      const order = page.order ?? index;
+      const rotation = page.rotation ?? 0;
+      const filter = page.filter ?? 'original';
+
+      await txn.runAsync(
+        `INSERT INTO pages (id, document_id, order_index, uri, rotation, filter)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [page.id, input.id, order, page.uri, rotation, filter],
+      );
+    }
+  });
+}
+
+/**
  * Removes every document and its image files.
  *
  * Used by the destructive "delete all" action in Settings. Page URIs are read

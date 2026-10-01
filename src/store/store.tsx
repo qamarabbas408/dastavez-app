@@ -12,6 +12,7 @@
 import { createContext, useContext, useMemo, useReducer, type ReactNode } from 'react';
 
 import { newId } from '@/data/ids';
+import type { DocumentRecord } from '@/data/types';
 
 import { MOCK_PDF_SOURCES, takeCapturePage } from './seed';
 import type {
@@ -20,6 +21,7 @@ import type {
   FailureFlags,
   MockSourceItem,
   OcrStatus,
+  PageCorners,
   PageFilter,
   StatusMessage,
 } from './types';
@@ -62,12 +64,14 @@ export type StoreAction =
   | { type: 'draft/startImport'; item: MockSourceItem }
   | { type: 'draft/startImportMany'; items: MockSourceItem[] }
   | { type: 'draft/startImportImages'; pages: { id: string; uri: string }[]; title?: string }
+  | { type: 'draft/startEdit'; document: DocumentRecord }
   | { type: 'draft/addPage' }
   | { type: 'draft/retakePage'; pageId: string }
   | { type: 'draft/removePage'; pageId: string }
   | { type: 'draft/rotatePage'; pageId: string }
   | { type: 'draft/reorderPages'; from: number; to: number }
   | { type: 'draft/setFilter'; pageId: string; filter: PageFilter }
+  | { type: 'draft/setCorners'; pageId: string; corners: PageCorners | null }
   | { type: 'draft/setTitle'; title: string }
   | { type: 'draft/setExportFormat'; exportAsPdf: boolean }
   | { type: 'draft/setOcrEnabled'; enabled: boolean }
@@ -229,6 +233,40 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
       return { ...state, draft, status: null };
     }
 
+    /**
+     * A saved document loaded back for reworking.
+     *
+     * Rotation, crop and filter were baked into the files when the document
+     * was saved, so the pages come back neutral — there is no edit state to
+     * restore, only the finished images. The page ids are carried over so a
+     * save updates the existing rows instead of leaving a second record for
+     * the same document.
+     */
+    case 'draft/startEdit': {
+      const { document } = action;
+
+      const pages: DraftPage[] = document.pages.map((page, index) => ({
+        id: page.id,
+        order: index,
+        label: labelFor(index),
+        uri: page.uri,
+        rotation: 0,
+        filter: 'original',
+      }));
+
+      const draft: Draft = {
+        origin: 'edit',
+        documentId: document.id,
+        pages,
+        title: document.title,
+        exportAsPdf: document.fileType === 'pdf',
+        ocrEnabled: document.ocrStatus !== 'unavailable',
+        ocrStatus: document.ocrStatus,
+        ocrText: document.ocrText,
+      };
+      return { ...state, draft, status: null };
+    }
+
     case 'draft/addPage': {
       if (!state.draft) return state;
       const pages = [...state.draft.pages, takeCapturePage(state.draft.pages.length)];
@@ -276,6 +314,16 @@ function reducer(state: StoreState, action: StoreAction): StoreState {
       if (!state.draft) return state;
       const pages = state.draft.pages.map((page) =>
         page.id === action.pageId ? { ...page, filter: action.filter } : page,
+      );
+      return { ...state, draft: { ...state.draft, pages } };
+    }
+
+    case 'draft/setCorners': {
+      if (!state.draft) return state;
+      const pages = state.draft.pages.map((page) =>
+        page.id === action.pageId
+          ? { ...page, corners: action.corners ?? undefined }
+          : page,
       );
       return { ...state, draft: { ...state.draft, pages } };
     }

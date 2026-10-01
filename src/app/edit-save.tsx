@@ -14,7 +14,7 @@
  * blocks saving. Neither discards the draft.
  */
 
-import { router } from 'expo-router';
+import { router, type Href } from 'expo-router';
 import { useSQLiteContext } from 'expo-sqlite';
 import { useState } from 'react';
 import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -27,19 +27,40 @@ import { AppIcon, type IconName } from '@/components/atoms/icon';
 import { Segmented } from '@/components/atoms/segmented';
 import { TextField } from '@/components/atoms/text-field';
 import { IconTileGrid } from '@/components/molecules/icon-tile-grid';
+import { CropEditor } from '@/components/molecules/crop-editor';
 import { PagePreview } from '@/components/molecules/page-preview';
 import { MaxContentWidth, Radius, Spacing } from '@/constants/theme';
-import { insertDocument } from '@/data/documents';
+import { insertDocument, updateDocument } from '@/data/documents';
 import { toDataError } from '@/data/errors';
 import { newId } from '@/data/ids';
 import { bakeImage } from '@/data/image-edit';
+import { detectPageCorners } from '@/data/native-image';
 import { deletePageFile, storePageImage } from '@/data/page-store';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
-import type { PageFilter } from '@/store/types';
+import type { Draft, PageCorners, PageFilter } from '@/store/types';
 import type { NewPage } from '@/data/types';
 
 const UNTITLED = 'Untitled document';
+
+const ORIGIN_LABEL: Record<Draft['origin'], string> = {
+  scan: 'from scan',
+  import: 'from import',
+  edit: 'editing a saved document',
+};
+
+/**
+ * Where Back and Discard land when a draft is left without saving.
+ *
+ * An edited document returns to its own viewer; a new draft returns to the
+ * flow that started it.
+ */
+function backTarget(draft: Draft): Href {
+  if (draft.origin === 'edit' && draft.documentId) {
+    return { pathname: '/document/[id]/view', params: { id: draft.documentId } };
+  }
+  return draft.origin === 'scan' ? '/scan/page-review' : '/import/source';
+}
 
 const FILTERS: { value: PageFilter; label: string; icon: IconName }[] = [
   { value: 'original', label: 'Original', icon: 'image' },
@@ -56,7 +77,12 @@ export default function EditSaveScreen() {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [saving, setSaving] = useState(false);
   /** Which editing tool is open, if any. Its options show above the toolbar. */
-  const [tool, setTool] = useState<'filter' | null>(null);
+  const [tool, setTool] = useState<'filter' | 'crop' | null>(null);
+  /**
+   * Crop chosen but not yet applied, in source space. Held here rather than on
+   * the page so Cancel costs nothing: the draft is untouched until Apply.
+   */
+  const [cropQuad, setCropQuad] = useState<PageCorners | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [nextTitle, setNextTitle] = useState('');
 
@@ -77,15 +103,23 @@ export default function EditSaveScreen() {
   }
 
   const active = draft.pages.find((page) => page.id === activePageId) ?? draft.pages[0];
-  const backTo = draft.origin === 'scan' ? '/scan/page-review' : '/import/source';
+  const editingId = draft.origin === 'edit' ? draft.documentId : undefined;
+  const backTo = backTarget(draft);
+  /**
+   * Leaving an edit goes back rather than replacing, so the viewer that pushed
+   * this screen stays underneath with its own navigation intact. That viewer
+   * reloads on focus, which is what picks the saved result back up.
+   */
+  const leave = () => (editingId && router.canGoBack() ? router.back() : router.replace(backTo));
   const lowStorage = state.failures.lowStorage;
   const title = draft.title.trim() || UNTITLED;
+  const fileType = draft.exportAsPdf ? 'pdf' : 'jpeg';
 
   // Mock captures have no image file. Saving them would write a record whose
   // pages point at nothing, so the draft is refused instead with an explanation.
   const mockPages = draft.pages.filter((page) => !page.uri).length;
   const hasRealPages = draft.pages.length > 0 && mockPages === 0;
-  const canSave = hasRealPages && !lowStorage && !saving;
+  const canSave = hasRealPages && !lowStorage && !saving && tool !== 'crop';
 
   const openRename = () => {
     setNextTitle(draft.title);
@@ -97,45 +131,110 @@ export default function EditSaveScreen() {
     setRenaming(false);
   };
 
+  /**
+   * Open the crop tool on a page that has not been cropped yet, seeding the
+   * corners from a native edge detect. Existing corners win over a fresh detect
+   * so reopening the tool keeps what the user already chose, and a late detect
+   * never overwrites corners the user dragged in the meantime.
+   */
+  const startCrop = () => {
+    if (!active?.uri) return;
+    const uri = active.uri;
+    setCropQuad(active.corners ?? null);
+    setTool('crop');
+    if (active.corners) return;
+
+    detectPageCorners(uri)
+      .then((found) => {
+        if (found) setCropQuad((current) => current ?? found);
+      })
+      .catch((error: unknown) => {
+        if (__DEV__) console.warn('Corner detection failed', error);
+      });
+  };
+
+  /** Cropping is a scratch layer; closing it simply throws the pending quad away. */
+  const closeCrop = () => {
+    setTool(null);
+    setCropQuad(null);
+  };
+
+  const applyCrop = () => {
+    if (!active) return;
+    dispatch({ type: 'draft/setCorners', pageId: active.id, corners: cropQuad });
+    closeCrop();
+  };
+
   const save = async () => {
     if (!canSave) return;
     setSaving(true);
 
-    // Track copies so a failure part-way through can be rolled back rather than
-    // leaving files that no record points at.
-    const copiedUris: string[] = [];
+    // Files written by this attempt, so a failure part-way through can be
+    // rolled back rather than leaving files that no record points at. Files
+    // this attempt replaced are tracked separately: they are only unreachable
+    // once the write has actually committed.
+    const createdUris: string[] = [];
+    const staleUris: string[] = [];
+    let committed = false;
 
     try {
       const pages: NewPage[] = [];
       for (const [index, page] of draft.pages.entries()) {
         if (!page.uri) throw new Error(`Page ${index + 1} has no image file.`);
-        // Rotation and filters are baked into the stored image, so the record
-        // carries no edit state and every reader sees the finished result.
-        const baked = await bakeImage(page.uri, page.rotation, page.filter);
-        const uri = await storePageImage(baked, page.id);
-        copiedUris.push(uri);
-        pages.push({ id: page.id, uri, order: index, rotation: 0, filter: 'original' });
+        // Crop, rotation and filters are baked into the stored image, so the
+        // record carries no edit state and every reader sees the finished result.
+        const baked = await bakeImage(page.uri, page.rotation, page.filter, page.corners);
+
+        let id = page.id;
+        let uri: string;
+
+        if (editingId && baked === page.uri) {
+          // Nothing to re-bake, so the record already points at the right file.
+          uri = page.uri;
+        } else {
+          // An edit writes beside the old file rather than over it. The record
+          // only moves once every page is done, and a fresh path is what makes
+          // the viewer read the new bytes instead of the ones it has cached.
+          if (editingId) id = newId('page');
+          uri = await storePageImage(baked, id);
+          createdUris.push(uri);
+          if (editingId) staleUris.push(page.uri);
+        }
+
+        pages.push({ id, uri, order: index, rotation: 0, filter: 'original' });
       }
 
-      const id = newId('doc');
       const savedTitle = draft.title.trim() || UNTITLED;
+      const documentId = editingId ?? newId('doc');
 
-      await insertDocument(db, {
-        id,
-        title: savedTitle,
-        date: new Date().toISOString().slice(0, 10),
-        fileType: draft.exportAsPdf ? 'pdf' : 'jpeg',
-        ocrStatus: draft.ocrStatus,
-        ocrText: draft.ocrText,
-        pages,
-      });
+      if (editingId) {
+        await updateDocument(db, {
+          id: documentId,
+          title: savedTitle,
+          fileType,
+          ocrStatus: draft.ocrStatus,
+          ocrText: draft.ocrText,
+          pages,
+        });
+      } else {
+        await insertDocument(db, {
+          id: documentId,
+          title: savedTitle,
+          date: new Date().toISOString().slice(0, 10),
+          fileType,
+          ocrStatus: draft.ocrStatus,
+          ocrText: draft.ocrText,
+          pages,
+        });
+      }
+      committed = true;
 
       dispatch({ type: 'draft/clear' });
       dispatch({ type: 'status/set', status: { tone: 'success', text: `Saved “${savedTitle}”.` } });
-      router.replace({ pathname: '/document/[id]/view', params: { id } });
-    } catch (error) {
-      for (const uri of copiedUris) deletePageFile(uri);
 
+      if (editingId) leave();
+      else router.replace({ pathname: '/document/[id]/view', params: { id: documentId } });
+    } catch (error) {
       const failure = toDataError(error, 'write-failed');
       if (__DEV__) console.warn('Save failed', failure);
 
@@ -146,10 +245,16 @@ export default function EditSaveScreen() {
           text:
             failure.code === 'storage-full'
               ? 'Not enough space to save. Free some up, then try again.'
-              : 'The document could not be saved. Nothing was changed.',
+              : editingId
+                ? 'Your changes could not be saved. The document is untouched.'
+                : 'The document could not be saved. Nothing was changed.',
         },
       });
     } finally {
+      // Committed: the record moved on, so the replaced files are orphans.
+      // Not committed: the fresh files are the orphans, and the old ones are
+      // still what the record describes.
+      for (const uri of committed ? staleUris : createdUris) deletePageFile(uri);
       setSaving(false);
     }
   };
@@ -192,7 +297,7 @@ export default function EditSaveScreen() {
           </View>
           <Text style={[styles.subtitle, { color: theme.textSecondary }]}>
             {draft.pages.length} {draft.pages.length === 1 ? 'page' : 'pages'} ·{' '}
-            {draft.origin === 'scan' ? 'from scan' : 'from import'}
+            {ORIGIN_LABEL[draft.origin]}
           </Text>
         </View>
 
@@ -207,7 +312,8 @@ export default function EditSaveScreen() {
       </View>
 
       <View style={styles.body}>
-        {draft.pages.length > 1 ? (
+        {/* Cropping owns the whole viewport, so the page strip steps aside. */}
+        {draft.pages.length > 1 && tool !== 'crop' ? (
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
@@ -238,7 +344,7 @@ export default function EditSaveScreen() {
           ]}>
           {/* Notices sit over the image so the page keeps the whole viewport. */}
           <View style={styles.overlay} pointerEvents="box-none">
-            {mockPages > 0 ? (
+            {tool !== 'crop' && mockPages > 0 ? (
               <Banner
                 tone="warning"
                 title="These pages are not real images"
@@ -246,7 +352,7 @@ export default function EditSaveScreen() {
               />
             ) : null}
 
-            {draft.ocrStatus === 'failed' ? (
+            {tool !== 'crop' && draft.ocrStatus === 'failed' ? (
               <>
                 <Banner
                   tone="danger"
@@ -263,7 +369,7 @@ export default function EditSaveScreen() {
               </>
             ) : null}
 
-            {lowStorage ? (
+            {tool !== 'crop' && lowStorage ? (
               <Banner
                 tone="warning"
                 title="Not enough space to save"
@@ -272,7 +378,18 @@ export default function EditSaveScreen() {
             ) : null}
           </View>
 
-          {active ? <PagePreview page={active} fill /> : null}
+          {tool === 'crop' && active?.uri ? (
+            <CropEditor
+              uri={active.uri}
+              rotation={active.rotation}
+              corners={cropQuad ?? undefined}
+              onChange={setCropQuad}
+            />
+          ) : active ? (
+            // Remounting per page starts any zoom over; changing the filter
+            // keeps it, so the same region can be compared across treatments.
+            <PagePreview key={active.id} page={active} fill zoomable />
+          ) : null}
         </View>
       </View>
 
@@ -288,36 +405,61 @@ export default function EditSaveScreen() {
         ]}>
         <View style={styles.dockInner}>
           {/* The open tool's options sit directly above the toolbar. */}
-          {tool === 'filter' && active ? (
-            <Segmented
-              accessibilityLabel="Page filter"
-              options={FILTERS}
-              value={active.filter}
-              onChange={(filter) =>
-                dispatch({ type: 'draft/setFilter', pageId: active.id, filter })
-              }
-            />
-          ) : null}
+          {tool === 'crop' ? (
+            <View style={styles.cropActions}>
+              <Button
+                label="Cancel"
+                variant="secondary"
+                onPress={closeCrop}
+                style={styles.cropAction}
+              />
+              <Button
+                label="Apply"
+                icon="check"
+                variant="primary"
+                onPress={applyCrop}
+                style={styles.cropAction}
+              />
+            </View>
+          ) : (
+            <>
+              {tool === 'filter' && active ? (
+                <Segmented
+                  accessibilityLabel="Page filter"
+                  options={FILTERS}
+                  value={active.filter}
+                  onChange={(filter) =>
+                    dispatch({ type: 'draft/setFilter', pageId: active.id, filter })
+                  }
+                />
+              ) : null}
 
-          <IconTileGrid
-            tiles={[
-              {
-                icon: 'rotate',
-                label: 'Rotate',
-                disabled: !active,
-                onPress: () => active && dispatch({ type: 'draft/rotatePage', pageId: active.id }),
-              },
-              {
-                icon: 'filter',
-                label: 'Filter',
-                selected: tool === 'filter',
-                disabled: !active,
-                onPress: () => setTool((current) => (current === 'filter' ? null : 'filter')),
-              },
-              { icon: 'crop', label: 'Crop' },
-              { icon: 'text', label: 'Text' },
-            ]}
-          />
+              <IconTileGrid
+                tiles={[
+                  {
+                    icon: 'rotate',
+                    label: 'Rotate',
+                    disabled: !active,
+                    onPress: () => active && dispatch({ type: 'draft/rotatePage', pageId: active.id }),
+                  },
+                  {
+                    icon: 'filter',
+                    label: 'Filter',
+                    selected: tool === 'filter',
+                    disabled: !active,
+                    onPress: () => setTool((current) => (current === 'filter' ? null : 'filter')),
+                  },
+                  {
+                    icon: 'crop',
+                    label: 'Crop',
+                    disabled: !active?.uri,
+                    onPress: startCrop,
+                  },
+                  { icon: 'text', label: 'Text' },
+                ]}
+              />
+            </>
+          )}
         </View>
       </View>
 
@@ -330,7 +472,7 @@ export default function EditSaveScreen() {
         onConfirm={() => {
           dispatch({ type: 'draft/discard' });
           setConfirmDiscard(false);
-          router.replace(backTo);
+          leave();
         }}
         onCancel={() => setConfirmDiscard(false)}
       />
@@ -427,6 +569,8 @@ const styles = StyleSheet.create({
     maxWidth: MaxContentWidth,
     alignSelf: 'center',
   },
+  cropActions: { flexDirection: 'row', gap: Spacing.two },
+  cropAction: { flex: 1 },
 
   backdrop: {
     flex: 1,

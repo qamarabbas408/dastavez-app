@@ -24,6 +24,7 @@ import { AppIcon } from '@/components/atoms/icon';
 import { BottomTabInset, MaxContentWidth, Spacing, touchTarget } from '@/constants/theme';
 import { countDocuments, deleteAllDocuments } from '@/data/documents';
 import { toDataError } from '@/data/errors';
+import { hasNativeImageProcessor } from '@/data/native-image';
 import { useAsyncData } from '@/data/use-async';
 import { useTheme } from '@/hooks/use-theme';
 import { useStore } from '@/store/store';
@@ -74,6 +75,7 @@ export default function SettingsScreen() {
   );
 
   const count = countData ?? 0;
+  const nativeProcessing = hasNativeImageProcessor();
 
   const deleteAll = async () => {
     if (deleting) return;
@@ -154,6 +156,15 @@ export default function SettingsScreen() {
         {__DEV__ ? (
           <View style={styles.devSection}>
             <Text style={[styles.devHeading, { color: theme.textSecondary }]}>Developer panel</Text>
+            <Banner
+              tone={nativeProcessing ? 'success' : 'info'}
+              title={nativeProcessing ? 'Image processing: native' : 'Image processing: Skia'}
+              message={
+                nativeProcessing
+                  ? 'The processor in modules/ is linked into this build, so colour filters run on the GPU and off the JS thread.'
+                  : 'The native processor is not linked, so colour filters fall back to Skia. This is expected in Expo Go and before the first dev build; it only affects how the filter is computed, not the result.'
+              }
+            />
             <Banner
               tone="info"
               title="Prototype controls"

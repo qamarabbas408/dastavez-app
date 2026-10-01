@@ -6,13 +6,13 @@
  * around it.
  */
 
-import type { FileKind, OcrStatus, PageFilter } from '@/data/types';
+import type { FileKind, OcrStatus, PageCorners, PageFilter } from '@/data/types';
 
 /**
  * Canonical definitions live in `src/data/types`; re-exported here so screens
  * can import the shared enums from either place.
  */
-export type { FileKind, OcrStatus, PageFilter };
+export type { FileKind, OcrStatus, PageCorners, PageFilter };
 
 /**
  * A page while it is part of an unfinished draft.
@@ -28,8 +28,10 @@ export type DraftPage = {
   uri?: string;
   /** Rotation in degrees: 0, 90, 180, or 270. */
   rotation: number;
-  /** Filter treatment. Not yet applied to real images. */
+  /** Filter treatment. Baked into the image when the draft is saved. */
   filter: PageFilter;
+  /** Crop region, normalized to the source image. Absent means uncropped. */
+  corners?: PageCorners;
 };
 
 /**
@@ -37,8 +39,14 @@ export type DraftPage = {
  * it; a draft that is discarded or saved simply stops being referenced.
  */
 export type Draft = {
-  /** How the draft was started, which decides the Back target. */
-  origin: 'scan' | 'import';
+  /**
+   * How the draft was started, which decides the Back target. `edit` is a
+   * saved document being reworked, so it goes back to that document rather
+   * than to the flow that created it.
+   */
+  origin: 'scan' | 'import' | 'edit';
+  /** Present only when `origin` is `edit`: the document being reworked. */
+  documentId?: string;
   pages: DraftPage[];
   title: string;
   /** Multipage PDF toggle from Edit & Save. */

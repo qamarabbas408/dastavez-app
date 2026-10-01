@@ -1,0 +1,10 @@
+{
+  "name": "expo-dastavez-image-processing",
+  "platforms": ["ios", "android", "web"],
+  "ios": {
+    "modules": ["ExpoDastavezImageProcessingModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.dastavezimageprocessing.ExpoDastavezImageProcessingModule"]
+  }
+}

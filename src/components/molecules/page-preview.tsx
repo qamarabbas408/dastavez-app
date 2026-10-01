@@ -6,9 +6,9 @@
  * drawn, and it is deliberately obviously a mock: a reviewer should never
  * mistake it for scanned content.
  *
- * Filters are baked with the same function that saving uses, so the preview
- * shows the real result rather than an approximation. Rotation stays a display
- * transform here; it is baked on save.
+ * Crop and filters are baked with the same function that saving uses, so the
+ * preview shows the real result rather than an approximation. Rotation stays a
+ * display transform here; it is baked on save.
  *
  * The prop type is structural so both a draft page and a saved page from the
  * database can be passed without conversion.
@@ -18,11 +18,13 @@ import { Image } from 'expo-image';
 import { useEffect, useState } from 'react';
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from 'react-native';
 
-import type { PageFilter } from '@/data/types';
+import type { PageCorners, PageFilter } from '@/data/types';
 import { bakeImage } from '@/data/image-edit';
 
 import { Radius, Spacing } from '@/constants/theme';
 import { useTheme } from '@/hooks/use-theme';
+
+import { ZoomableImage } from './zoomable-image';
 
 const FILTER_LABEL: Record<PageFilter, string> = {
   original: 'Original',
@@ -39,6 +41,7 @@ export type PreviewPage = {
   rotation: number;
   filter: PageFilter;
   uri?: string;
+  corners?: PageCorners;
 };
 
 export type PagePreviewProps = {
@@ -53,6 +56,8 @@ export type PagePreviewProps = {
    * page is rotated.
    */
   fill?: boolean;
+  /** Lets the big preview be pinched to zoom and dragged to pan. */
+  zoomable?: boolean;
   style?: StyleProp<ViewStyle>;
 };
 
@@ -71,32 +76,38 @@ function fitWidth(box: Box, rotation: number): number {
 }
 
 /**
- * The image to display, with the chosen filter baked in.
+ * The image to display, with the crop and chosen filter baked in.
  *
- * Skia work happens off the render path, so the unfiltered image stays on screen
- * until the filtered one is ready rather than flashing empty.
+ * Skia work happens off the render path, so the untouched image stays on screen
+ * until the baked one is ready rather than flashing empty.
  */
-function useFilteredUri(uri: string | undefined, filter: PageFilter): string | undefined {
-  const [filtered, setFiltered] = useState<string | undefined>(undefined);
+function useBakedUri(
+  uri: string | undefined,
+  filter: PageFilter,
+  corners?: PageCorners,
+): string | undefined {
+  const [baked, setBaked] = useState<string | undefined>(undefined);
 
   useEffect(() => {
-    if (!uri || filter === 'original') return;
+    if (!uri || (filter === 'original' && !corners)) return;
 
     let cancelled = false;
-    bakeImage(uri, 0, filter)
+    bakeImage(uri, 0, filter, corners)
       .then((result) => {
-        if (!cancelled) setFiltered(result);
+        if (!cancelled) setBaked(result);
       })
       .catch((error: unknown) => {
-        if (__DEV__) console.warn('Filter preview failed', error);
+        if (__DEV__) console.warn('Preview bake failed', error);
       });
 
     return () => {
       cancelled = true;
     };
-  }, [uri, filter]);
+  }, [uri, filter, corners]);
 
-  return filter === 'original' ? uri : (filtered ?? uri);
+  // With neither an edit nor a crop there is nothing baked to show, so the
+  // source is returned directly and a stale `baked` can never win.
+  return filter === 'original' && !corners ? uri : (baked ?? uri);
 }
 
 export function PagePreview({
@@ -104,28 +115,34 @@ export function PagePreview({
   width = 220,
   compact = false,
   fill = false,
+  zoomable = false,
   style,
 }: PagePreviewProps) {
   const theme = useTheme();
-  const source = useFilteredUri(page.uri, page.filter);
+  const source = useBakedUri(page.uri, page.filter, page.corners);
   const [box, setBox] = useState<Box | null>(null);
 
   const w = fill ? (box ? fitWidth(box, page.rotation) : 0) : width;
   const height = Math.round(w * PAPER_RATIO);
   const rotation = { transform: [{ rotate: `${page.rotation}deg` }] };
   const frame = { width: w, height, borderRadius: Radius.small, borderColor: theme.border };
+  const label = `Page ${page.order + 1}`;
 
   const content = source ? (
     <View
       accessible
-      accessibilityLabel={`Page ${page.order + 1}`}
+      accessibilityLabel={label}
       style={[styles.frame, frame, { backgroundColor: theme.backgroundElement }, rotation, style]}>
-      <Image
-        source={{ uri: source }}
-        style={StyleSheet.absoluteFill}
-        contentFit="contain"
-        accessibilityLabel={`Page ${page.order + 1}`}
-      />
+      {zoomable ? (
+        <ZoomableImage uri={source} accessibilityLabel={label} />
+      ) : (
+        <Image
+          source={{ uri: source }}
+          style={StyleSheet.absoluteFill}
+          contentFit="contain"
+          accessibilityLabel={label}
+        />
+      )}
     </View>
   ) : (
     <View

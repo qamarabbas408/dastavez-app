@@ -23,7 +23,7 @@ import { useColorScheme } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { Colors } from '@/constants/theme';
+import { Colors, ViewerColors } from '@/constants/theme';
 import { bootstrapDataLayer } from '@/data/bootstrap';
 import { DATABASE_NAME } from '@/data/db';
 import { StoreProvider } from '@/store/store';
@@ -55,7 +55,12 @@ export default function RootLayout() {
                 <Stack.Screen name="import/source" />
                 <Stack.Screen name="import/picker" />
                 <Stack.Screen name="edit-save" />
-                <Stack.Screen name="document/[id]/view" />
+                <Stack.Screen
+                  name="document/[id]/view"
+                  // A black viewer pushed over a light tab bar would flash white
+                  // during the transition.
+                  options={{ contentStyle: { backgroundColor: ViewerColors.background } }}
+                />
                 <Stack.Screen name="document/[id]/export-confirm" />
                 <Stack.Screen name="document/[id]/share-handoff" />
               </Stack>

@@ -16,6 +16,23 @@ export type OcrStatus = 'pending' | 'complete' | 'failed' | 'unavailable';
 
 export type PageFilter = 'original' | 'greyscale' | 'highContrast';
 
+/** A point normalized 0..1 against the source image's width and height. */
+export type NormalizedPoint = { x: number; y: number };
+
+/**
+ * The four corners of a page's crop region, in source-image space.
+ *
+ * Source space rather than display space so rotation and crop stay independent:
+ * the corners keep naming the same pixels whichever way the page is turned.
+ * Baked into the image on save, so no persisted record carries them.
+ */
+export type PageCorners = {
+  topLeft: NormalizedPoint;
+  topRight: NormalizedPoint;
+  bottomRight: NormalizedPoint;
+  bottomLeft: NormalizedPoint;
+};
+
 /** A page whose image is stored on disk. */
 export type Page = {
   id: string;

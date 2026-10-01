@@ -51,6 +51,22 @@ export const Colors = {
 
 export type ThemeColor = keyof typeof Colors.light & keyof typeof Colors.dark;
 
+/**
+ * Chrome for the full-screen page viewer. Dark regardless of the system theme,
+ * the way document viewers are, so the page reads as a sheet on a desk rather
+ * than as a card in an app.
+ */
+export const ViewerColors = {
+  background: '#000000',
+  /** Translucent bar drawn over the page. */
+  chrome: 'rgba(0, 0, 0, 0.62)',
+  text: '#FFFFFF',
+  textSecondary: 'rgba(255, 255, 255, 0.68)',
+  border: 'rgba(255, 255, 255, 0.28)',
+  accent: Colors.dark.accent,
+  danger: Colors.dark.danger,
+} as const;
+
 export const Fonts = Platform.select({
   ios: {
     sans: 'system-ui',
