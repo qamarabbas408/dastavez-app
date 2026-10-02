@@ -1,11 +1,18 @@
 /**
- * Crop editor: the page image with four draggable corners over it.
+ * Crop editor: the page image with draggable handles over it.
+ *
+ * There is a round handle on each corner and a smaller square one at the middle
+ * of each edge. An edge handle moves the whole side rather than one end, which
+ * is the gesture a scanner's crop screen teaches.
  *
  * The screen owns the pending crop, so this component holds no crop state and
  * Cancel is simply "stop rendering". Corners arrive and leave in **source-image
  * space**; this is the only place that knows about display space, because it is
  * the only place that knows how the page is currently turned. Converting here
  * means rotation and crop never invalidate each other.
+ *
+ * The quad itself is still four corners — an edge handle is derived from the
+ * pair it sits between, so it adds a way to drag, not a fifth piece of state.
  *
  * Without the image's natural size there is nothing trustworthy to attach a
  * corner to, so the overlays wait for `onLoad` rather than guessing.
@@ -38,11 +45,41 @@ const CORNER_LABEL: Record<CornerKey, string> = {
   bottomLeft: 'Bottom left',
 };
 
+const CORNERS = new Set<string>(CORNER_KEYS);
+
+/** An edge handle, named for the side it moves. */
+const EDGE_KEYS = ['top', 'right', 'bottom', 'left'] as const;
+type EdgeKey = (typeof EDGE_KEYS)[number];
+
+const EDGE_CORNERS: Record<EdgeKey, readonly [CornerKey, CornerKey]> = {
+  top: ['topLeft', 'topRight'],
+  right: ['topRight', 'bottomRight'],
+  bottom: ['bottomRight', 'bottomLeft'],
+  left: ['bottomLeft', 'topLeft'],
+};
+
+const EDGE_LABEL: Record<EdgeKey, string> = {
+  top: 'Top',
+  right: 'Right',
+  bottom: 'Bottom',
+  left: 'Left',
+};
+
+type HandleKey = CornerKey | EdgeKey;
+
+function isCorner(key: HandleKey): key is CornerKey {
+  return CORNERS.has(key);
+}
+
 const LINE_WIDTH = 2;
 const HANDLE_SIZE = 24;
-/** Half the minimum touch target, so grabbing a corner is a full-size tap. */
+/** A different shape from the corners, so the two read as different gestures. */
+const EDGE_HANDLE_SIZE = 16;
+/** Just enough rounding to look deliberate, still unmistakably a square. */
+const EDGE_HANDLE_RADIUS = 3;
+/** Half the minimum touch target, so grabbing any handle is a full-size tap. */
 const GRAB_RADIUS = touchTarget.min / 2;
-/** How far an accessibility action nudges a corner. */
+/** How far an accessibility action nudges a handle. */
 const NUDGE = 0.02;
 
 const A11Y_ACTIONS = [
@@ -86,6 +123,17 @@ function toSource(point: NormalizedPoint, rotation: number): NormalizedPoint {
 
 function clamp01(value: number): number {
   return Math.min(1, Math.max(0, value));
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+/** The point halfway along one edge of a quad. */
+function midpoint(quad: PageCorners, a: CornerKey, b: CornerKey): NormalizedPoint {
+  const from = quad[a];
+  const to = quad[b];
+  return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
 }
 
 function mapQuad(corners: PageCorners, point: (p: NormalizedPoint) => NormalizedPoint): PageCorners {
@@ -185,20 +233,34 @@ export function CropEditor({ uri, rotation, corners, onChange, style }: CropEdit
   // Only the gesture itself has to outlive a render. Everything else is read
   // from the responder handlers' own closure, which is refreshed every render,
   // so a drag always works against the corners, rotation and layout it sees.
-  const dragging = useRef<CornerKey | null>(null);
-  const origin = useRef<XY>({ x: 0, y: 0 });
+  const dragging = useRef<HandleKey | null>(null);
+  /** The whole quad as it stood when the drag began, in display space. */
+  const origin = useRef<PageCorners>(FULL_FRAME);
   const grab = useRef<XY>({ x: 0, y: 0 });
 
-  /** The corner under a touch, when one is within the grab radius. */
-  const nearest = (x: number, y: number): CornerKey | null => {
+  /** The handle under a touch, when one is within the grab radius. */
+  const nearest = (x: number, y: number): HandleKey | null => {
     if (!rect) return null;
-    let best: CornerKey | null = null;
-    let bestDistance = GRAB_RADIUS;
-    for (const key of CORNER_KEYS) {
-      const point = display[key];
+
+    const distanceTo = (point: NormalizedPoint) => {
       const dx = rect.visual.left + point.x * rect.visual.width - x;
       const dy = rect.visual.top + point.y * rect.visual.height - y;
-      const distance = Math.hypot(dx, dy);
+      return Math.hypot(dx, dy);
+    };
+
+    // Corners are listed first so they win a tie against an edge handle on a
+    // quad that has been collapsed almost to a line.
+    const candidates: [HandleKey, NormalizedPoint][] = [
+      ...CORNER_KEYS.map((key) => [key, display[key]] as [HandleKey, NormalizedPoint]),
+      ...EDGE_KEYS.map(
+        (key) => [key, midpoint(display, ...EDGE_CORNERS[key])] as [HandleKey, NormalizedPoint],
+      ),
+    ];
+
+    let best: HandleKey | null = null;
+    let bestDistance = GRAB_RADIUS;
+    for (const [key, point] of candidates) {
+      const distance = distanceTo(point);
       if (distance < bestDistance) {
         bestDistance = distance;
         best = key;
@@ -237,6 +299,29 @@ export function CropEditor({ uri, rotation, corners, onChange, style }: CropEdit
     });
   };
 
+  /**
+   * Translate one edge so the whole side follows the finger.
+   *
+   * Both corners take the same delta and it is clamped against the pair, so a
+   * corner reaching the image border stops the edge rather than bending it out
+   * of shape. `from` is the display-space quad the delta is measured against —
+   * the snapshot taken when a drag began, or the live quad for a nudge.
+   */
+  const moveEdge = (edge: EdgeKey, dx: number, dy: number, from: PageCorners) => {
+    const [a, b] = EDGE_CORNERS[edge];
+    const startA = from[a];
+    const startB = from[b];
+    const shift = {
+      x: clamp(dx, -Math.min(startA.x, startB.x), 1 - Math.max(startA.x, startB.x)),
+      y: clamp(dy, -Math.min(startA.y, startB.y), 1 - Math.max(startA.y, startB.y)),
+    };
+    onChange({
+      ...base,
+      [a]: toSource({ x: startA.x + shift.x, y: startA.y + shift.y }, rotation),
+      [b]: toSource({ x: startB.x + shift.x, y: startB.y + shift.y }, rotation),
+    });
+  };
+
   const onLayout = (event: LayoutChangeEvent) => {
     const next = {
       width: event.nativeEvent.layout.width,
@@ -264,7 +349,7 @@ export function CropEditor({ uri, rotation, corners, onChange, style }: CropEdit
     <View
       style={[styles.root, style]}
       onLayout={onLayout}
-      // The image only takes the gesture when a corner is under the touch, so
+      // The image only takes the gesture when a handle is under the touch, so
       // the rest of the crop surface stays inert rather than catching drags.
       onStartShouldSetResponder={(event) =>
         nearest(event.nativeEvent.locationX, event.nativeEvent.locationY) !== null
@@ -274,20 +359,26 @@ export function CropEditor({ uri, rotation, corners, onChange, style }: CropEdit
         const key = nearest(event.nativeEvent.locationX, event.nativeEvent.locationY);
         if (!key || !rect) return;
         dragging.current = key;
-        origin.current = { ...display[key] };
+        origin.current = display;
         grab.current = { x: event.nativeEvent.pageX, y: event.nativeEvent.pageY };
       }}
       onResponderMove={(event) => {
         const key = dragging.current;
         if (!key || !rect || rect.visual.width === 0 || rect.visual.height === 0) return;
 
-        const next = {
-          x: clamp01(origin.current.x + (event.nativeEvent.pageX - grab.current.x) / rect.visual.width),
-          y: clamp01(
-            origin.current.y + (event.nativeEvent.pageY - grab.current.y) / rect.visual.height,
-          ),
-        };
-        onChange({ ...base, [key]: toSource(next, rotation) });
+        const dx = (event.nativeEvent.pageX - grab.current.x) / rect.visual.width;
+        const dy = (event.nativeEvent.pageY - grab.current.y) / rect.visual.height;
+
+        if (isCorner(key)) {
+          const start = origin.current[key];
+          onChange({
+            ...base,
+            [key]: toSource({ x: clamp01(start.x + dx), y: clamp01(start.y + dy) }, rotation),
+          });
+          return;
+        }
+
+        moveEdge(key, dx, dy, origin.current);
       }}
       onResponderRelease={release}
       onResponderTerminate={release}>
@@ -363,6 +454,36 @@ export function CropEditor({ uri, rotation, corners, onChange, style }: CropEdit
               ]}
             />
           ))}
+
+          {EDGE_KEYS.map((key) => {
+            const point = toXY(midpoint(display, ...EDGE_CORNERS[key]));
+            return (
+              <View
+                key={key}
+                pointerEvents="none"
+                accessible
+                accessibilityLabel={`${EDGE_LABEL[key]} crop edge`}
+                accessibilityHint="Drag to move the whole edge, or use the move actions."
+                accessibilityActions={A11Y_ACTIONS}
+                onAccessibilityAction={(event) => {
+                  const action = event.nativeEvent.actionName;
+                  if (action === 'moveLeft') moveEdge(key, -NUDGE, 0, display);
+                  else if (action === 'moveRight') moveEdge(key, NUDGE, 0, display);
+                  else if (action === 'moveUp') moveEdge(key, 0, -NUDGE, display);
+                  else if (action === 'moveDown') moveEdge(key, 0, NUDGE, display);
+                }}
+                style={[
+                  styles.edgeHandle,
+                  {
+                    left: point.x - EDGE_HANDLE_SIZE / 2,
+                    top: point.y - EDGE_HANDLE_SIZE / 2,
+                    borderColor: theme.background,
+                    backgroundColor: theme.accent,
+                  },
+                ]}
+              />
+            );
+          })}
         </>
       ) : null}
     </View>
@@ -381,6 +502,15 @@ const styles = StyleSheet.create({
     width: HANDLE_SIZE,
     height: HANDLE_SIZE,
     borderRadius: Radius.pill,
+    borderWidth: 3,
+  },
+  // A rounded square rather than a circle, so a corner and an edge handle are
+  // never mistaken for each other on a small screen.
+  edgeHandle: {
+    position: 'absolute',
+    width: EDGE_HANDLE_SIZE,
+    height: EDGE_HANDLE_SIZE,
+    borderRadius: EDGE_HANDLE_RADIUS,
     borderWidth: 3,
   },
 });
