@@ -54,12 +54,23 @@ export default function RootLayout() {
                 <Stack.Screen name="scan/page-review" />
                 <Stack.Screen name="import/source" />
                 <Stack.Screen name="import/picker" />
-                <Stack.Screen name="edit-save" />
+                {/*
+                  Both of these screens are one big drag surface — the page is
+                  pannable and the crop handles straddle its edge. The stack's
+                  swipe-to-go-back gesture is recognised on the screen edge, so
+                  it wins the touch and pops the screen instead of moving the
+                  handle. Both have their own Back control, so the gesture is
+                  disabled rather than fought.
+                */}
+                <Stack.Screen name="edit-save" options={{ gestureEnabled: false }} />
                 <Stack.Screen
                   name="document/[id]/view"
                   // A black viewer pushed over a light tab bar would flash white
                   // during the transition.
-                  options={{ contentStyle: { backgroundColor: ViewerColors.background } }}
+                  options={{
+                    contentStyle: { backgroundColor: ViewerColors.background },
+                    gestureEnabled: false,
+                  }}
                 />
                 <Stack.Screen name="document/[id]/export-confirm" />
                 <Stack.Screen name="document/[id]/share-handoff" />
